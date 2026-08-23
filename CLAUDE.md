@@ -66,8 +66,8 @@ Browser defaults are conservative. When building or touching screen share, these
 
 ## Current status
 
-**Working on:** Session 1 — scaffold + deploy pipeline
-**Completed:** nothing yet
+**Working on:** Session 2 — signaling + first WebRTC peer connection
+**Completed:** Session 1 — Vite+React (JS) app scaffolded, Supabase client wired up (`src/lib/supabaseClient.js`), verified locally. Vercel deploy pending user setup.
 
 <!-- Update these two lines as you go so context carries between sessions. -->
 
