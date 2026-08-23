@@ -12,3 +12,17 @@
   font-size: 15px;
   color: var(--text);
 }
+
+/* Minimal layout just to see both video feeds -- real side-by-side camera
+   box UI comes in Session 3. */
+.videos {
+  display: flex;
+  gap: 12px;
+}
+
+.videos video {
+  width: 320px;
+  height: 240px;
+  background: #000;
+  border-radius: 8px;
+}
