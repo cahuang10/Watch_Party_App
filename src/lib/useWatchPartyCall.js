@@ -46,6 +46,13 @@ export function useWatchPartyCall() {
   const videoSenderRef = useRef(null);
   const audioSenderRef = useRef(null);
   const signalingRef = useRef(null);
+  // Bumped on every camera toggle. Opening a camera is slow (~300ms) and
+  // toggleCamera is async, so clicking faster than that leaves more than one
+  // getUserMedia in flight at once. Only the newest may keep its track; without
+  // this the earlier ones each add a live track to the stream and the *device*
+  // stays open behind them -- the camera light stays on with the UI showing
+  // "camera off", which is exactly the failure that looks like a lie.
+  const cameraOpRef = useRef(0);
   // Bumped every time a peering session is torn down, so async work started by
   // the old session can notice it has been outlived. See onPeerOnline.
   const peeringTokenRef = useRef(0);
@@ -81,6 +88,9 @@ export function useWatchPartyCall() {
     const next = !cameraOnRef.current;
     cameraOnRef.current = next;
     setCameraOn(next);
+    // Claim this toggle. Any acquisition still in flight from an earlier click
+    // is now stale and must throw its track away rather than attach it.
+    const op = ++cameraOpRef.current;
 
     const stream = localStreamRef.current;
     const sender = videoSenderRef.current;
@@ -100,12 +110,21 @@ export function useWatchPartyCall() {
       // always means a new getUserMedia, and that's the ~300ms light-blink.
       const cameraStream = await navigator.mediaDevices.getUserMedia({ video: true });
       const videoTrack = cameraStream.getVideoTracks()[0];
-      if (!cameraOnRef.current || localStreamRef.current !== stream) {
-        // Toggled off again, or the peering session was rebuilt, while the
-        // device was opening. Whoever superseded us sends their own state.
+      if (op !== cameraOpRef.current || !cameraOnRef.current || localStreamRef.current !== stream) {
+        // Superseded by a later toggle, toggled off again, or the peering
+        // session was rebuilt while the device was opening. Whoever superseded
+        // us sends their own state. Stopping the track here is the whole point:
+        // an abandoned track holds the camera open forever.
         videoTrack.stop();
         return;
       }
+      // Belt and braces: clear the slot before filling it, so the stream can
+      // never accumulate two video tracks even if the guard above is ever
+      // weakened. A track left in the stream keeps the device open.
+      stream.getVideoTracks().forEach((track) => {
+        track.stop();
+        stream.removeTrack(track);
+      });
       await sender?.replaceTrack(videoTrack);
       stream.addTrack(videoTrack);
     }
