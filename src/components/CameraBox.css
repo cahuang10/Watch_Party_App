@@ -1,0 +1,75 @@
+.camera-box {
+  position: relative;
+  /* Grow to share the row, but never past a sane size. */
+  flex: 1 1 280px;
+  max-width: 420px;
+  /* Height stays auto so aspect-ratio actually applies. The previous rule set
+     width AND height, which makes aspect-ratio inert -- and once max-width
+     clamped the width on a phone, the box became a ~156x240 portrait sliver
+     with a badly cropped feed. */
+  aspect-ratio: 16 / 9;
+  border-radius: 10px;
+  overflow: hidden;
+  background: #000;
+}
+
+.camera-box__video {
+  width: 100%;
+  height: 100%;
+  /* 16/9 matches what webcams and phone front cameras hand Chrome, so this
+     barely crops. */
+  object-fit: cover;
+  display: block;
+}
+
+/* Self-view only. Mirrored the way a real mirror is, because seeing yourself
+   un-mirrored is disorienting. The track sent to your partner is untouched and
+   stays the right way round. */
+.camera-box__video--mirrored {
+  transform: scaleX(-1);
+}
+
+.camera-box__placeholder {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  background: var(--code-bg);
+}
+
+.camera-box__emoji {
+  font-size: 36px;
+  line-height: 1;
+}
+
+.camera-box__placeholder-text {
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--text);
+}
+
+.camera-box__footer {
+  position: absolute;
+  left: 8px;
+  bottom: 8px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 9px;
+  border-radius: 999px;
+  background: rgba(0, 0, 0, 0.55);
+}
+
+.camera-box__name {
+  font-family: var(--mono);
+  font-size: 12px;
+  color: #fff;
+}
+
+.camera-box__badge {
+  font-size: 12px;
+  line-height: 1;
+}

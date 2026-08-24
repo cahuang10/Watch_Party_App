@@ -57,10 +57,13 @@ Browser defaults are conservative. When building or touching screen share, these
 ## Known tricky areas
 
 - **Renegotiation.** Adding a screen-share track to a live peer connection triggers ICE renegotiation. Expect this to be the most likely source of "camera worked, then screen share broke everything."
+- **`replaceTrack` is how you change media *without* renegotiating.** A transceiver is a durable slot in the connection; a track is just what's currently plugged into it. `sender.replaceTrack(x)` swaps the contents without touching offer/answer as long as the kind matches, and `replaceTrack(null)` stops sending with the slot intact. `removeTrack`/`addTrack` fire `negotiationneeded` instead — avoid them while glare is unhandled. Session 3 reserves both slots with `addTransceiver` at connection time even when there is no track yet, so enabling the camera later can never renegotiate. Capture the sender the moment you create it: `getSenders().find((s) => s.track?.kind === "video")` quietly finds nothing after a `replaceTrack(null)`.
+- **Mute is not detectable from the receiving end.** A muted mic sends silence and a stopped camera sends nothing, and neither is distinguishable from a network stall. Device state has to be *told* over the signaling channel (`media-state`), never inferred from the stream.
 - **Document PiP API support.** Newer, Chromium-specific. Check current support before building session 3; have a fallback in mind.
 - **Audio feedback loops.** Mic + tab audio + speakers can echo badly. Handle echo cancellation explicitly; assume headphones as the fallback.
 - **TURN sits silently broken.** It only activates when direct connection fails, so a bad config looks fine until it matters. Test with `iceTransportPolicy: "relay"` to force a TURN-only connection and confirm it works.
 - **Supabase Realtime has connection/message caps** on the free tier. Fine for two users, but worth knowing they exist.
+- **Read `SESSION_2_POSTMORTEM.md`** before debugging any signaling or connection problem. It explains the jargon, walks through all five attempts and why four of them failed, and gives a layer-by-layer diagnostic ladder.
 - **Presence identity must be stable across reloads.** Session 2 burned several rounds on this. Keying presence on a per-load random id makes *every refresh* register a new entry that lingers until its socket times out — two people showed up as five participants, and every downstream heuristic (offerer election, partner selection) failed on the ghosts. Presence is now keyed on a per-tab id in `sessionStorage`. Verify with the `participants` count in the `presence sync` log: it must stay at 2 no matter how often either side reloads.
 - **Presence keeps multiple metas per key.** A key groups a participant's connections; it does not replace them. `Object.keys(state).length` is the participant count — flattening the metas counts *connections* and will mislead you. Collapse each key to its newest meta by `joinedAt`.
 - **A peer connection belongs to a peering session, not to the page.** When the partner reloads they are a new peer and need a brand-new `RTCPeerConnection`. Reusing a completed one produces `setRemoteDescription ... called in wrong state: stable`, and leaves the partner's frozen last frame on screen looking like a live connection.
@@ -72,11 +75,12 @@ Browser defaults are conservative. When building or touching screen share, these
 
 ## Current status
 
-**Working on:** Session 3 — camera box UI + hide/show toggle (not started)
+**Working on:** Session 4 — screen share + quality tuning (not started)
 
 **Completed:**
 - Session 1 — Vite+React (JS) scaffolded, Supabase client wired (`src/lib/supabaseClient.js`), deployed to Vercel.
 - Session 2 — Signaling over Supabase Realtime (`src/lib/signaling.js`) + working two-person WebRTC camera call, verified cross-network (laptop on wifi ↔ iPhone on cellular). Survives either side refreshing independently.
+- Session 3 — Camera box UI plus **real** camera and mic controls. The call moved out of `App.jsx` into `src/lib/useWatchPartyCall.js` (App.jsx is now presentational, `CameraBox.jsx` is a dumb tile). The camera opens only once a partner is actually present and is released when they leave — no camera light while you sit alone waiting. Camera off does `replaceTrack(null)` + `track.stop()`, so the device is genuinely released; mic mute does `track.enabled = false`, which is instant and leaves the device open. Both states ride the signaling channel as a `media-state` message, so each tile shows the *other* person's real state. Known trade-off: a partner reload is a leave-then-join, so your camera light blinks off and on — add a grace timer if it grates. Document Picture-in-Picture (locked decision #7) still not built; decision unchanged, revisit after Session 4.
 
 **Still unverified:** the TURN-only relay path. Load with `?relay=1` on *both* ends to force it. The working call may have connected directly, which would mean the relay has never actually been exercised — see "TURN sits silently broken" below.
 
