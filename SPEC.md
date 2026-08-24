@@ -94,7 +94,7 @@ Realistic expectation: on decent home internet with these applied, screen share 
 ### MVP — "does this even work"
 - [x] Vite + React app scaffolded, Supabase wired up, deployed to Vercel
 - [x] Signaling over Supabase Realtime channel
-- [ ] Two-person WebRTC camera call, side-by-side boxes
+- [x] Two-person WebRTC camera call, side-by-side boxes
 - [ ] Hide/show toggle per camera box
 - [ ] Camera boxes rendered inside a Document Picture-in-Picture window (native drag, default top-right)
 - [x] STUN + TURN configured in `RTCPeerConnection`

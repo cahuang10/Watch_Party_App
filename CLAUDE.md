@@ -61,13 +61,24 @@ Browser defaults are conservative. When building or touching screen share, these
 - **Audio feedback loops.** Mic + tab audio + speakers can echo badly. Handle echo cancellation explicitly; assume headphones as the fallback.
 - **TURN sits silently broken.** It only activates when direct connection fails, so a bad config looks fine until it matters. Test with `iceTransportPolicy: "relay"` to force a TURN-only connection and confirm it works.
 - **Supabase Realtime has connection/message caps** on the free tier. Fine for two users, but worth knowing they exist.
+- **Presence identity must be stable across reloads.** Session 2 burned several rounds on this. Keying presence on a per-load random id makes *every refresh* register a new entry that lingers until its socket times out — two people showed up as five participants, and every downstream heuristic (offerer election, partner selection) failed on the ghosts. Presence is now keyed on a per-tab id in `sessionStorage`. Verify with the `participants` count in the `presence sync` log: it must stay at 2 no matter how often either side reloads.
+- **Presence keeps multiple metas per key.** A key groups a participant's connections; it does not replace them. `Object.keys(state).length` is the participant count — flattening the metas counts *connections* and will mislead you. Collapse each key to its newest meta by `joinedAt`.
+- **A peer connection belongs to a peering session, not to the page.** When the partner reloads they are a new peer and need a brand-new `RTCPeerConnection`. Reusing a completed one produces `setRemoteDescription ... called in wrong state: stable`, and leaves the partner's frozen last frame on screen looking like a live connection.
+- **Signals need `to` / `from` / `session`.** Supabase broadcast reaches every channel member, so without addressing, a third participant's traffic gets processed as if it were the partner's. The `session` check specifically prevents a stale offer from renegotiating a connection that is already up.
+- **Use `pagehide`, not `beforeunload`,** to untrack presence on exit — iOS Safari/WebKit frequently doesn't fire `beforeunload`, and the phone is the device most likely to be closed abruptly.
+- **Glare is not handled yet.** Conflicting offers are ignored, which is safe only because roles are fixed and deterministic. Session 4 breaks that assumption: adding a screen-share track triggers renegotiation, and V1 wants either person able to share. That is where the W3C "perfect negotiation" pattern (polite/impolite peers, rollback) will be needed.
 
 ---
 
 ## Current status
 
-**Working on:** Session 2 — signaling + first WebRTC peer connection
-**Completed:** Session 1 — Vite+React (JS) app scaffolded, Supabase client wired up (`src/lib/supabaseClient.js`), verified locally. Vercel deploy pending user setup.
+**Working on:** Session 3 — camera box UI + hide/show toggle (not started)
+
+**Completed:**
+- Session 1 — Vite+React (JS) scaffolded, Supabase client wired (`src/lib/supabaseClient.js`), deployed to Vercel.
+- Session 2 — Signaling over Supabase Realtime (`src/lib/signaling.js`) + working two-person WebRTC camera call, verified cross-network (laptop on wifi ↔ iPhone on cellular). Survives either side refreshing independently.
+
+**Still unverified:** the TURN-only relay path. Load with `?relay=1` on *both* ends to force it. The working call may have connected directly, which would mean the relay has never actually been exercised — see "TURN sits silently broken" below.
 
 <!-- Update these two lines as you go so context carries between sessions. -->
 
