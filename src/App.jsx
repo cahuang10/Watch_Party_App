@@ -3,6 +3,11 @@ import { iceServers } from "./lib/iceServers";
 import { joinSignalingChannel } from "./lib/signaling";
 import "./App.css";
 
+// If we believe we're the answerer but no offer shows up in this long, assume the
+// offerer election picked wrong (a stale presence entry is the usual cause) and
+// ask for one explicitly rather than waiting forever.
+const OFFER_TIMEOUT_MS = 3000;
+
 function App() {
   const localVideoRef = useRef(null);
   const remoteVideoRef = useRef(null);
@@ -13,6 +18,14 @@ function App() {
     let signaling;
     let localStream;
     let cancelled = false;
+
+    // Handshake bookkeeping. `offerSent` keeps us from ever sending a second
+    // offer mid-negotiation (that would put the connection in an invalid state);
+    // `nudgeSent` records that we asked the peer for an offer, which matters for
+    // the tie-break below if we both asked at the same time.
+    let offerSent = false;
+    let nudgeSent = false;
+    let offerTimer;
 
     // ICE candidates can arrive over signaling before setRemoteDescription
     // has run (they're discovered/sent in parallel with the offer/answer
@@ -89,38 +102,93 @@ function App() {
         }
       }
 
+      async function createAndSendOffer(reason) {
+        if (offerSent) return;
+        offerSent = true;
+        console.log("creating offer:", reason);
+        setStatus("offerer · creating offer");
+        const offer = await pc.createOffer();
+        await pc.setLocalDescription(offer);
+        signaling.sendSignal({ type: "offer", description: offer });
+        setStatus("offerer · offer sent");
+      }
+
       signaling = joinSignalingChannel({
         onPeerOnline: async ({ isOfferer }) => {
-          setStatus("connecting...");
-          if (isOfferer) {
-            const offer = await pc.createOffer();
-            await pc.setLocalDescription(offer);
-            signaling.sendSignal({ type: "offer", description: offer });
+          // Both of these callbacks are invoked by the channel and are not
+          // awaited by start(), so start().catch() does not cover them. Without
+          // these try/catch blocks a failure here becomes an unhandled rejection
+          // and the UI just sits on its last status forever with no clue why.
+          try {
+            if (isOfferer) {
+              await createAndSendOffer("elected offerer");
+              return;
+            }
+
+            setStatus("answerer · waiting for offer");
+
+            // Safety net: if the election deferred to a stale presence entry then
+            // nobody is actually going to offer, and both peers wait forever.
+            // After a beat, ask out loud.
+            offerTimer = setTimeout(() => {
+              if (remoteDescriptionSet) return;
+              nudgeSent = true;
+              console.warn("no offer after 3s — asking peer to send one");
+              setStatus("answerer · no offer yet, nudging peer");
+              signaling.sendSignal({ type: "need-offer", from: signaling.clientId });
+            }, OFFER_TIMEOUT_MS);
+          } catch (err) {
+            console.error("handshake failed:", err);
+            setStatus(`error: ${err.message}`);
           }
         },
         onSignal: async (payload) => {
-          if (payload.type === "offer") {
-            await applyRemoteDescription(payload.description);
-            const answer = await pc.createAnswer();
-            await pc.setLocalDescription(answer);
-            signaling.sendSignal({ type: "answer", description: answer });
-          } else if (payload.type === "answer") {
-            await applyRemoteDescription(payload.description);
-          } else if (payload.type === "ice-candidate") {
-            // Logged alongside the local candidates above so one console shows both
-            // ends: if both sides are `relay` but the addresses belong to different
-            // TURN servers, that mismatch is the connection failure.
-            console.log(
-              "remote candidate:",
-              payload.candidate?.type,
-              payload.candidate?.protocol,
-              payload.candidate?.address
-            );
-            if (remoteDescriptionSet) {
-              await pc.addIceCandidate(payload.candidate);
-            } else {
-              queuedCandidates.push(payload.candidate);
+          try {
+            if (payload.type === "offer") {
+              clearTimeout(offerTimer);
+              setStatus("answerer · offer received");
+              await applyRemoteDescription(payload.description);
+              const answer = await pc.createAnswer();
+              await pc.setLocalDescription(answer);
+              signaling.sendSignal({ type: "answer", description: answer });
+              setStatus("answerer · answer sent");
+            } else if (payload.type === "answer") {
+              await applyRemoteDescription(payload.description);
+              setStatus("offerer · answer received");
+            } else if (payload.type === "need-offer") {
+              if (offerSent && pc.localDescription) {
+                // We already offered, so the broadcast itself must have been
+                // dropped -- Supabase broadcast is fire-and-forget with no retry.
+                // Re-send the description we already have; creating a second,
+                // different offer here would invalidate the first one.
+                console.log("re-sending existing offer (peer never got it)");
+                signaling.sendSignal({ type: "offer", description: pc.localDescription });
+                return;
+              }
+              // Otherwise the peer gave up waiting. If we nudged too, then we
+              // both think we're the answerer -- tie-break on id so exactly one
+              // of us takes the offerer role, instead of both offering at once.
+              if (nudgeSent && signaling.clientId > payload.from) return;
+              await createAndSendOffer("peer asked for one");
+            } else if (payload.type === "ice-candidate") {
+              // Logged alongside the local candidates above so one console shows both
+              // ends: if both sides are `relay` but the addresses belong to different
+              // TURN servers, that mismatch is the connection failure.
+              console.log(
+                "remote candidate:",
+                payload.candidate?.type,
+                payload.candidate?.protocol,
+                payload.candidate?.address
+              );
+              if (remoteDescriptionSet) {
+                await pc.addIceCandidate(payload.candidate);
+              } else {
+                queuedCandidates.push(payload.candidate);
+              }
             }
+          } catch (err) {
+            console.error("signal handling failed:", payload.type, err);
+            setStatus(`error: ${err.message}`);
           }
         },
       });
@@ -130,6 +198,7 @@ function App() {
 
     return () => {
       cancelled = true;
+      clearTimeout(offerTimer);
       signaling?.leave();
       pc?.close();
       // Stop the tracks via the variable, not via localVideoRef.current -- the
