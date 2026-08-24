@@ -1,23 +1,15 @@
 import { supabase } from "./supabaseClient";
 
-// Both tabs join this same fixed channel name, so they find each other.
-// No auth yet (that's a V2 item), so this is intentionally not scoped to a
-// specific pair of users — anyone who loads the deployed app right now joins
-// the same signaling channel.
-const CHANNEL_NAME = "watch-party-signaling";
+// Bumped once from "watch-party-signaling" to orphan the pile of ghost presence
+// entries the old per-load identity model left behind. Anything still lingering
+// in the old channel is now someone else's problem.
+const CHANNEL_NAME = "watch-party-signaling-v2";
 const TAB_ID_KEY = "watch-party-tab-id";
 
-// A stable id for this *tab*, kept across reloads. The per-load `clientId` below
-// changes every time the page loads, which means our own earlier loads linger in
-// presence looking like a stranger -- presence entries survive until the socket
-// actually times out (30s+, longer on a phone that backgrounded or changed
-// networks), so we need some way to recognise our own ghosts.
-//
-// sessionStorage, not localStorage, and the distinction matters: sessionStorage
-// survives a reload but is scoped to one tab. localStorage would be shared by
-// every tab in the browser, so two tabs on the same machine would each filter the
-// other out as "my own ghost" and never connect -- which is exactly how this gets
-// tested locally.
+// A stable id for this tab, surviving reloads. sessionStorage, not localStorage,
+// and the distinction matters both ways: it must survive a refresh (so we can
+// recognise our own previous load) but must NOT be shared between tabs (or two
+// tabs on one machine would each mistake the other for itself and never pair).
 function getTabId() {
   let id = sessionStorage.getItem(TAB_ID_KEY);
   if (!id) {
@@ -27,96 +19,141 @@ function getTabId() {
   return id;
 }
 
-// Called once per tab, after the camera is ready. `onPeerOnline` fires whenever
-// we start a *new peering session* — either the partner just appeared, or they
-// reloaded and came back as a different peer. `onPeerLeft` fires when they go
-// away. `onSignal` fires for every offer/answer/ice-candidate from the current
-// partner. Returns { clientId, sendSignal, leave }.
+// Called once per tab, after the camera is ready. `onPeerOnline` fires whenever a
+// new peering session starts — the partner appeared, or reloaded and needs a
+// fresh connection. `onPeerLeft` fires when they go away. `onSignal` fires only
+// for messages addressed to us, from our current partner, in the current session.
 export function joinSignalingChannel({ onPeerOnline, onPeerLeft, onSignal }) {
-  const clientId = crypto.randomUUID();
   const tabId = getTabId();
   const joinedAt = Date.now();
 
-  // clientId of the peer we're currently negotiating with. Doubles as the way we
-  // notice our partner was replaced: same person, new page load, new clientId.
-  let partnerClientId = null;
+  // The partner we're currently paired with, and the id of the peering session
+  // we share with them. Both sides derive the same session id from the same two
+  // presence entries, which is what lets us drop signals belonging to a session
+  // that has already ended.
+  let partner = null;
+  let sessionId = null;
 
   const channel = supabase.channel(CHANNEL_NAME, {
     config: {
       // We don't want to receive our own broadcasts back.
       broadcast: { self: false },
-      presence: { key: clientId },
+      // Keyed on the stable tab id, NOT a per-load value. This is the core fix:
+      // reloading now reuses the key, so Supabase replaces our entry instead of
+      // appending another one. The old per-load key manufactured a fresh ghost
+      // on every single refresh, which is where "5 entries for 2 people" came
+      // from and why every downstream heuristic kept failing.
+      presence: { key: tabId },
     },
   });
 
   channel
     .on("broadcast", { event: "signal" }, ({ payload }) => {
-      // A ghost's late broadcast must not be able to disturb a live negotiation.
-      // If we haven't identified a partner yet we accept anyway -- dropping a
-      // valid early offer would be worse than processing a stray one.
-      if (partnerClientId && payload.from && payload.from !== partnerClientId) {
-        console.warn("ignoring signal from non-partner:", payload.type);
+      // Supabase broadcast reaches every member of the channel, not just our
+      // partner, so each message has to be checked three ways: is it for us, is
+      // it from the peer we're paired with, and does it belong to the peering
+      // session we're currently in. The third check is what stops a stale offer
+      // from renegotiating a connection that is already up and working.
+      if (payload.to !== tabId) return;
+      if (!partner || payload.from !== partner.tabId) return;
+      if (payload.session !== sessionId) {
+        console.warn("ignoring signal from a finished session:", payload.type);
         return;
       }
       console.log("signal in  <-", payload.type);
       onSignal(payload);
     })
     .on("presence", { event: "sync" }, () => {
-      const entries = Object.values(channel.presenceState()).flat();
+      const state = channel.presenceState();
 
-      // Drop ghosts of our own earlier page loads -- same tab, different
-      // clientId. These used to be indistinguishable from a real partner, which
-      // is what deadlocked the offerer election.
-      const others = entries.filter((entry) => entry.tabId !== tabId);
+      // Presence keeps *multiple metas per key*: a reload adds another meta under
+      // the same key rather than replacing it, and the old one only disappears
+      // once its socket is reaped (immediately, given the pagehide untrack below).
+      // So the participant count is the number of KEYS -- flattening the metas
+      // counts connections, not people. Collapse each key to its newest meta.
+      const newestMeta = (metas) => metas.slice().sort((a, b) => b.joinedAt - a.joinedAt)[0];
+      const others = Object.keys(state)
+        .filter((key) => key !== tabId)
+        .map((key) => newestMeta(state[key]))
+        .filter(Boolean);
+      const next = others.sort((a, b) => b.joinedAt - a.joinedAt)[0] ?? null;
 
-      // Whatever is left, the newest entry is the live partner; anything older is
-      // a ghost of a previous load on their side.
-      const partner = others.sort((a, b) => b.joinedAt - a.joinedAt)[0];
-
+      // `participants` is the number to watch: with the identity model correct it
+      // sits at 2 no matter how many times either side reloads. If it climbs,
+      // something is manufacturing ghosts again. `metas` above it is only ever
+      // interesting when a socket hasn't been reaped yet.
       console.log("presence sync:", {
-        entries: entries.length,
-        others: others.length,
-        partner: partner?.clientId ?? null,
+        participants: Object.keys(state).length,
+        metas: Object.values(state).flat().length,
+        partner: next?.tabId ?? null,
       });
 
-      if (!partner) {
-        if (partnerClientId) {
-          partnerClientId = null;
+      if (!next) {
+        if (partner) {
+          partner = null;
+          sessionId = null;
           onPeerLeft();
         }
         return;
       }
 
-      // Same peer we're already talking to — nothing to do.
-      if (partner.clientId === partnerClientId) return;
+      // Same partner, same page load — nothing has changed.
+      if (partner && partner.tabId === next.tabId && partner.joinedAt === next.joinedAt) {
+        return;
+      }
 
-      // Either our first partner, or they reloaded and are now a different peer.
-      // Either way this is a brand new peering session.
-      partnerClientId = partner.clientId;
+      // Either a new partner, or the same one after a reload (their joinedAt
+      // moved). Both mean any existing connection is dead and a new peering
+      // session begins.
+      partner = { tabId: next.tabId, joinedAt: next.joinedAt };
 
-      // Lower id offers -- arbitrary but deterministic, and both sides compute it
-      // identically without having to negotiate. Compared against the identified
-      // partner rather than a sorted list a ghost could sit at the front of.
-      const isOfferer = clientId < partner.clientId;
+      // Both sides compute this identically from the same two presence entries.
+      sessionId = [tabId, partner.tabId].sort().join(":") + "@" + Math.max(joinedAt, partner.joinedAt);
+
+      // Lower tab id offers. Deterministic, and stable across reloads -- the old
+      // per-load id meant a refresh could silently flip which side offers.
+      const isOfferer = tabId < partner.tabId;
       console.log(`new peering session — role: ${isOfferer ? "OFFERER" : "answerer"}`);
-      onPeerOnline({ isOfferer, peerId: partner.clientId });
+      onPeerOnline({ isOfferer, peerId: partner.tabId });
     })
     .subscribe(async (status) => {
       console.log("signaling channel:", status);
       if (status === "SUBSCRIBED") {
-        await channel.track({ clientId, tabId, joinedAt });
+        await channel.track({ tabId, joinedAt });
       }
     });
 
-  // Every signal carries who sent it, so the receiver can filter out ghosts.
   function sendSignal(payload) {
+    if (!partner) {
+      console.warn("no partner yet, dropping outgoing", payload.type);
+      return;
+    }
     console.log("signal out ->", payload.type);
     channel.send({
       type: "broadcast",
       event: "signal",
-      payload: { ...payload, from: clientId },
+      payload: { ...payload, from: tabId, to: partner.tabId, session: sessionId },
     });
   }
 
-  return { clientId, sendSignal, leave: () => supabase.removeChannel(channel) };
+  // Announce departure rather than letting the socket rot. Without this a closed
+  // tab sits in presence for 30-60s until the server notices, and the partner
+  // spends that whole time trying to negotiate with something that isn't there.
+  // `pagehide` rather than `beforeunload` because iOS Safari/WebKit frequently
+  // doesn't fire beforeunload at all -- and the phone is exactly the device most
+  // likely to be backgrounded or closed abruptly.
+  const handlePageHide = () => {
+    channel.untrack();
+    supabase.removeChannel(channel);
+  };
+  window.addEventListener("pagehide", handlePageHide);
+
+  return {
+    tabId,
+    sendSignal,
+    leave: () => {
+      window.removeEventListener("pagehide", handlePageHide);
+      supabase.removeChannel(channel);
+    },
+  };
 }

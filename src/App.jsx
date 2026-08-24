@@ -209,7 +209,9 @@ function App() {
             } else if (payload.type === "answer") {
               // An answer is only meaningful while our own offer is outstanding.
               // Applying one in `stable` throws, and that is exactly the error a
-              // one-sided refresh used to produce.
+              // one-sided refresh used to produce. signaling.js now filters out
+              // finished sessions upstream, so this is a second line of defence
+              // rather than the only one.
               if (pc.signalingState !== "have-local-offer") {
                 console.warn("ignoring answer, signalingState is", pc.signalingState);
                 return;
@@ -229,7 +231,7 @@ function App() {
               // Otherwise the peer gave up waiting. If we nudged too then we both
               // think we're the answerer -- tie-break on id so exactly one of us
               // takes the offerer role, instead of both offering at once.
-              if (nudgeSent && signaling.clientId > payload.from) return;
+              if (nudgeSent && signaling.tabId > payload.from) return;
               await createAndSendOffer("peer asked for one");
             } else if (payload.type === "ice-candidate") {
               // Logged alongside the local candidates above so one console shows
