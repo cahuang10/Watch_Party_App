@@ -39,7 +39,7 @@ To share: click share in the app (or in the PiP window itself), the browser's na
 
 **Why TURN from day one:** roughly 10–20% of connections can't establish a direct peer-to-peer path — usually symmetric NAT (router assigns a different external port per destination, so STUN can't discover a usable address) or a firewall blocking UDP. These are structural properties of the network, not transient glitches, so **reloading does not fix them**. Without TURN, those sessions simply never connect, with no useful error. TURN converts the problem from "accept an incoming connection" (which NATs fight) to "make an outbound connection" (which every network allows), so it essentially always works.
 
-**Provider:** start with **Open Relay Project** (no signup, public credentials, drop straight into config). Switch to **Metered.ca** (50GB/month free tier) if more headroom or control is wanted — swapping providers is a config change, not a rearchitecture.
+**Provider:** using **ExpressTURN** (free tier: 1000GB/month, long-term credentials, TCP+UDP on 3478 plus 80/443 for firewall traversal). Credentials live in `.env.local` as `VITE_TURN_SERVER` / `VITE_TURN_USERNAME` / `VITE_TURN_CREDENTIAL`. Alternatives if more headroom or control is wanted: **Open Relay Project** (no signup, public credentials) or **Metered.ca** (50GB/month free tier) — swapping providers is a config change, not a rearchitecture.
 
 ### Scope: cut line for MVP
 
@@ -67,7 +67,7 @@ The test applied to each feature: *if this were missing, would we open Teleparty
 | Hosting | Vercel | Free tier, GitHub-connected deploys |
 | DB + Realtime + Auth | Supabase | Postgres for chat/session logs, Realtime for signaling *and* chat, simple auth — all free tier |
 | Video/screen share | Native WebRTC APIs | `RTCPeerConnection`, `getUserMedia`, `getDisplayMedia`. No library needed for 2 peers |
-| TURN | Open Relay Project | Free, zero signup |
+| TURN | ExpressTURN | Free tier, 1000GB/mo, credentials via env vars |
 | Summaries (V2) | **Undecided** — hosted API vs local model via Ollama. See section 7. | Deliberately deferred; not needed until V2 |
 
 **Note on architecture:** for exactly two people, direct peer-to-peer is the *correct* design, not a lesser version of what Zoom does. Zoom's SFU (server in the middle) exists to scale to many participants; for a 2-person call it's overhead, not a quality gain. The gap versus Zoom/FaceTime is polish and infrastructure, not architecture.
@@ -92,12 +92,12 @@ Realistic expectation: on decent home internet with these applied, screen share 
 ## 4. Milestones
 
 ### MVP — "does this even work"
-- [ ] Vite + React app scaffolded, Supabase wired up, deployed to Vercel
-- [ ] Signaling over Supabase Realtime channel
+- [x] Vite + React app scaffolded, Supabase wired up, deployed to Vercel
+- [x] Signaling over Supabase Realtime channel
 - [ ] Two-person WebRTC camera call, side-by-side boxes
 - [ ] Hide/show toggle per camera box
 - [ ] Camera boxes rendered inside a Document Picture-in-Picture window (native drag, default top-right)
-- [ ] STUN + TURN configured in `RTCPeerConnection`
+- [x] STUN + TURN configured in `RTCPeerConnection`
 - [ ] Screen share (tab), one direction, quality-tuned per section 3
 - [ ] Basic live text chat (in-memory, no persistence)
 - [ ] "Request pause" nudge button + on-screen notification for sharer

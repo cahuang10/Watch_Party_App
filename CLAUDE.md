@@ -24,7 +24,7 @@ I'm a CS major, but new to web development and to WebRTC specifically. I want to
 - **Hosting:** Vercel
 - **DB / Realtime / Auth:** Supabase (Postgres for chat + session logs, Realtime for both signaling and chat)
 - **Video + screen share:** native WebRTC (`RTCPeerConnection`, `getUserMedia`, `getDisplayMedia`) — no library
-- **TURN:** Open Relay Project (free tier)
+- **TURN:** ExpressTURN (free tier — 1000GB/mo, UDP+TCP on 3478, also 80/443 for firewall traversal)
 - **Summaries (V2 only):** undecided — hosted API vs local model via Ollama. Don't assume either; see section 7 of SPEC.md. Not relevant until session 9.
 
 ---

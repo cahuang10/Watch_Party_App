@@ -11,6 +11,7 @@ function App() {
   useEffect(() => {
     let pc;
     let signaling;
+    let localStream;
     let cancelled = false;
 
     // ICE candidates can arrive over signaling before setRemoteDescription
@@ -21,7 +22,7 @@ function App() {
     const queuedCandidates = [];
 
     async function start() {
-      const localStream = await navigator.mediaDevices.getUserMedia({
+      localStream = await navigator.mediaDevices.getUserMedia({
         video: true,
         audio: true,
       });
@@ -32,7 +33,20 @@ function App() {
       localVideoRef.current.srcObject = localStream;
       setStatus("waiting for partner...");
 
-      pc = new RTCPeerConnection({ iceServers, iceTransportPolicy: "relay" }); // TEMP: TURN-only test
+      // TURN-only test mode. Load the page with ?relay=1 to throw away every
+      // direct candidate (host/srflx) so media *must* go through the TURN relay.
+      // TURN normally only kicks in when a direct connection fails, which means a
+      // broken relay config looks perfectly fine until the day it matters -- this
+      // flag makes verifying it a one-second thing to repeat, rather than a line
+      // that gets commented in and out.
+      const forceRelay = new URLSearchParams(window.location.search).get("relay") === "1";
+
+      pc = new RTCPeerConnection({
+        iceServers,
+        ...(forceRelay ? { iceTransportPolicy: "relay" } : {}),
+      });
+      console.log(forceRelay ? "ICE mode: relay-only (TURN forced)" : "ICE mode: all transports");
+
       localStream.getTracks().forEach((track) => pc.addTrack(track, localStream));
 
       pc.ontrack = (event) => {
@@ -42,27 +56,29 @@ function App() {
 
       pc.onicecandidate = (event) => {
         if (event.candidate) {
-          console.log("local candidate type:", event.candidate.type, event.candidate.protocol); // TEMP debug
+          // For a `relay` candidate, `address` is the address the TURN server
+          // allocated for us. Logging it matters because most free TURN tiers only
+          // relay between their own clients -- if the two peers end up allocated on
+          // different servers (our host resolves to more than one IP), every
+          // relay-to-relay pair fails while everything else looks healthy.
+          console.log("local  candidate:", event.candidate.type, event.candidate.protocol, event.candidate.address);
           signaling.sendSignal({ type: "ice-candidate", candidate: event.candidate });
-        } else {
-          console.log("candidate gathering complete"); // TEMP debug
         }
       };
 
       pc.onconnectionstatechange = () => {
-        console.log("connectionState:", pc.connectionState); // TEMP debug
+        console.log("connectionState:", pc.connectionState);
         if (pc.connectionState === "disconnected" || pc.connectionState === "failed") {
           setStatus("disconnected");
         }
       };
       pc.oniceconnectionstatechange = () => {
-        console.log("iceConnectionState:", pc.iceConnectionState); // TEMP debug
+        console.log("iceConnectionState:", pc.iceConnectionState);
       };
+      // Fires when a STUN/TURN server rejects us. 401 = bad credentials,
+      // 486 = allocation quota reached, 701 = server unreachable.
       pc.onicecandidateerror = (e) => {
-        console.log("icecandidateerror:", e.errorCode, e.errorText, e.url); // TEMP debug
-      };
-      pc.onicegatheringstatechange = () => {
-        console.log("iceGatheringState:", pc.iceGatheringState); // TEMP debug
+        console.warn("icecandidateerror:", e.errorCode, e.errorText, e.url);
       };
 
       async function applyRemoteDescription(description) {
@@ -91,6 +107,15 @@ function App() {
           } else if (payload.type === "answer") {
             await applyRemoteDescription(payload.description);
           } else if (payload.type === "ice-candidate") {
+            // Logged alongside the local candidates above so one console shows both
+            // ends: if both sides are `relay` but the addresses belong to different
+            // TURN servers, that mismatch is the connection failure.
+            console.log(
+              "remote candidate:",
+              payload.candidate?.type,
+              payload.candidate?.protocol,
+              payload.candidate?.address
+            );
             if (remoteDescriptionSet) {
               await pc.addIceCandidate(payload.candidate);
             } else {
@@ -107,8 +132,10 @@ function App() {
       cancelled = true;
       signaling?.leave();
       pc?.close();
-      const stream = localVideoRef.current?.srcObject;
-      stream?.getTracks().forEach((track) => track.stop());
+      // Stop the tracks via the variable, not via localVideoRef.current -- the
+      // ref may already be detached by the time cleanup runs, which would leave
+      // the camera light on.
+      localStream?.getTracks().forEach((track) => track.stop());
     };
   }, []);
 
