@@ -184,10 +184,11 @@ export function useWatchPartyCall() {
       connection.onicecandidate = (event) => {
         if (!event.candidate) return;
         // For a `relay` candidate, `address` is the address the TURN server
-        // allocated for us. Logging it matters because most free TURN tiers only
-        // relay between their own clients -- if the two peers end up allocated on
-        // different servers (our host resolves to more than one IP), every
-        // relay-to-relay pair fails while everything else looks healthy.
+        // allocated for us. Worth logging because it's the only visible sign
+        // TURN is alive at all -- no relay candidate means the credentials or
+        // the host are wrong. `free.expressturn.com` resolves to more than one
+        // IP, so the two peers can be allocated on different ones; that is
+        // normal and fine, each allocation is independently usable.
         console.log(
           "local  candidate:",
           event.candidate.type,
@@ -510,23 +511,32 @@ export function useWatchPartyCall() {
               if (nudgeSent && signalingRef.current.tabId > payload.from) return;
               await createAndSendOffer("peer asked for one");
             } else if (payload.type === "ice-candidate") {
+              // `type`, `protocol` and `address` are *parsed* properties of an
+              // RTCIceCandidate, not stored fields: toJSON() serialises only
+              // { candidate, sdpMid, sdpMLineIndex, usernameFragment }, so they
+              // arrive undefined after the trip through Supabase broadcast.
+              // Rebuilding a real RTCIceCandidate re-parses them out of the
+              // candidate string. Without this the log reads
+              // "remote candidate: undefined undefined undefined" and the
+              // relay-address comparison below is silently useless.
+              const candidate = new RTCIceCandidate(payload.candidate);
               // Logged alongside the local candidates above so one console shows
               // both ends: if both sides are `relay` but the addresses belong to
               // different TURN servers, that mismatch is the connection failure.
               console.log(
                 "remote candidate:",
-                payload.candidate?.type,
-                payload.candidate?.protocol,
-                payload.candidate?.address
+                candidate.type,
+                candidate.protocol,
+                candidate.address
               );
               if (remoteDescriptionSet) {
-                await pc.addIceCandidate(payload.candidate);
+                await pc.addIceCandidate(candidate);
               } else {
                 // ICE candidates can arrive before setRemoteDescription has run --
                 // they're discovered and sent in parallel with the offer/answer
                 // exchange, not after it -- and addIceCandidate throws if called
                 // too early, so hold onto them until the description is set.
-                queuedCandidates.push(payload.candidate);
+                queuedCandidates.push(candidate);
               }
             }
           } catch (err) {
