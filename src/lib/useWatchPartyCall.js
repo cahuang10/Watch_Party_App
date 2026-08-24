@@ -160,7 +160,9 @@ export function useWatchPartyCall() {
       return stream;
     }
 
-    function createPeerConnection() {
+    // `isOfferer` decides how our own media gets attached, and the two roles are
+    // genuinely different -- see the transceiver block at the bottom.
+    function createPeerConnection(isOfferer) {
       const connection = new RTCPeerConnection({
         iceServers,
         ...(forceRelay ? { iceTransportPolicy: "relay" } : {}),
@@ -168,9 +170,9 @@ export function useWatchPartyCall() {
 
       connection.ontrack = (event) => {
         // Fires once per remote track (audio, then video). We collect them into
-        // a stream we own rather than trusting `event.streams[0]`, because our
-        // senders come from addTransceiver and a slot reserved before its track
-        // exists has no stream to advertise.
+        // a stream we own rather than trusting `event.streams[0]`: a transceiver
+        // reserved before its track exists has no stream to advertise, so
+        // `event.streams` can legitimately be empty.
         if (!remoteStreamRef.current) remoteStreamRef.current = new MediaStream();
         remoteStreamRef.current.addTrack(event.track);
         if (remoteVideoRef.current) {
@@ -220,35 +222,89 @@ export function useWatchPartyCall() {
         console.warn("icecandidateerror:", e.errorCode, e.errorText, e.url);
       };
 
-      // Reserve one slot per kind up front, whether or not there's a track to
-      // put in it right now. If we used addTrack instead, a session that started
-      // with the camera off would have no video sender at all, and switching the
-      // camera on later would fire `negotiationneeded`. Reserving both slots
-      // removes that case entirely: enabling the camera is always a replaceTrack
-      // into a slot that already exists.
+      // --- attaching our media: the offerer and the answerer differ ----------
       //
-      // Audio first, then video, on both peers -- setRemoteDescription matches
-      // the offer's m-lines to unassociated transceivers in order, so the two
-      // sides have to add them in the same order.
-      const stream = localStreamRef.current;
-      const audioTrack = stream?.getAudioTracks()[0] ?? null;
-      const videoTrack = stream?.getVideoTracks()[0] ?? null;
-      const audioTransceiver = connection.addTransceiver(audioTrack ?? "audio", {
-        direction: "sendrecv",
-        streams: stream ? [stream] : [],
-      });
-      const videoTransceiver = connection.addTransceiver(videoTrack ?? "video", {
-        direction: "sendrecv",
-        streams: stream ? [stream] : [],
-      });
-      // Capture the senders now. Looking them up later with
-      // getSenders().find(s => s.track?.kind === "video") breaks the moment we
-      // replaceTrack(null): the sender is still there, but its track is null, so
-      // the search quietly finds nothing.
-      audioSenderRef.current = audioTransceiver.sender;
-      videoSenderRef.current = videoTransceiver.sender;
+      // The offerer defines the m-lines, so it reserves one slot per kind here,
+      // whether or not there's a track to put in it yet. That's what makes
+      // turning the camera on later a plain replaceTrack into an existing slot
+      // instead of a renegotiation.
+      //
+      // The ANSWERER must not do this. setRemoteDescription(offer) builds its
+      // own transceivers from the offer's m-lines, and it will NOT adopt ones
+      // made by addTransceiver -- only addTrack-created transceivers are
+      // eligible for that. Pre-creating them here leaves the answerer holding
+      // four: two orphans with `mid: null` that never send, plus two recvonly
+      // ones from the SDP. The answer still has the right two m-lines and
+      // nothing throws, so the failure is silent: media flows offerer ->
+      // answerer only, and the offerer sits looking at a black box. That was
+      // the one-way-video bug. The answerer fills in its tracks after
+      // setRemoteDescription instead -- see attachLocalMediaToAnswer().
+      if (isOfferer) {
+        const stream = localStreamRef.current;
+        const audioTrack = stream?.getAudioTracks()[0] ?? null;
+        const videoTrack = stream?.getVideoTracks()[0] ?? null;
+        const audioTransceiver = connection.addTransceiver(audioTrack ?? "audio", {
+          direction: "sendrecv",
+          streams: stream ? [stream] : [],
+        });
+        const videoTransceiver = connection.addTransceiver(videoTrack ?? "video", {
+          direction: "sendrecv",
+          streams: stream ? [stream] : [],
+        });
+        // Capture the senders now. Looking them up later with
+        // getSenders().find(s => s.track?.kind === "video") breaks the moment we
+        // replaceTrack(null): the sender is still there, but its track is null,
+        // so the search quietly finds nothing.
+        audioSenderRef.current = audioTransceiver.sender;
+        videoSenderRef.current = videoTransceiver.sender;
+      }
 
       return connection;
+    }
+
+    // The answerer's half of the above. Called once, after
+    // setRemoteDescription(offer) has created the transceivers and before
+    // createAnswer() reads their directions off to build the SDP.
+    async function attachLocalMediaToAnswer() {
+      const stream = localStreamRef.current;
+      const transceivers = pcRef.current.getTransceivers();
+      console.log(
+        "answerer transceivers from offer:",
+        transceivers.map((t) => `${t.mid}:${t.receiver.track.kind}:${t.direction}`).join(" ")
+      );
+
+      for (const transceiver of transceivers) {
+        // A transceiver from a rejected or stopped m-line must be left alone:
+        // both `replaceTrack` and setting `.direction` on one throw
+        // InvalidStateError. Throwing here is not a cosmetic failure -- it
+        // aborts before createAnswer(), so no answer is ever sent and the
+        // offerer sits at `have-local-offer` forever with no clue why. An offer
+        // can legitimately carry sections we don't recognise, so skip anything
+        // that isn't a live audio or video slot rather than assuming.
+        if (transceiver.direction === "stopped" || transceiver.currentDirection === "stopped") {
+          console.warn("skipping stopped transceiver, mid", transceiver.mid);
+          continue;
+        }
+        const kind = transceiver.receiver.track.kind;
+        if (kind !== "audio" && kind !== "video") {
+          console.warn("skipping transceiver of unexpected kind:", kind);
+          continue;
+        }
+
+        const track = kind === "audio"
+          ? stream?.getAudioTracks()[0]
+          : stream?.getVideoTracks()[0];
+        // A missing track is fine and expected -- it's the camera being off.
+        // The slot still exists, which is the whole point.
+        if (track) await transceiver.sender.replaceTrack(track);
+        // Without this the transceiver stays `recvonly` (it was built from an
+        // offer at a moment when we had nothing attached) and we never send.
+        transceiver.direction = "sendrecv";
+        // First slot of each kind wins: if an offer somehow carries two video
+        // sections, the controls must drive the one we actually attached to.
+        if (kind === "audio") audioSenderRef.current ??= transceiver.sender;
+        else videoSenderRef.current ??= transceiver.sender;
+      }
     }
 
     // Throw away the current peering session, devices included.
@@ -294,6 +350,13 @@ export function useWatchPartyCall() {
       }
     }
 
+    // How many m= sections a description carries. Two (audio + video) is what
+    // this app should ever produce; anything else means something added a
+    // section we didn't ask for, and that's worth seeing in the log.
+    function sectionCount(description) {
+      return (description?.sdp?.match(/^m=/gm) || []).length;
+    }
+
     async function createAndSendOffer(reason) {
       if (offerSent) return;
       offerSent = true;
@@ -301,6 +364,10 @@ export function useWatchPartyCall() {
       setStatus("offerer · creating offer");
       const offer = await pcRef.current.createOffer();
       await pcRef.current.setLocalDescription(offer);
+      console.log(
+        "offer sections:", sectionCount(offer),
+        (offer.sdp.match(/^m=.*/gm) || []).map((m) => m.split(" ")[0]).join(" ")
+      );
       signalingRef.current.sendSignal({ type: "offer", description: offer });
       setStatus("offerer · offer sent");
     }
@@ -342,7 +409,7 @@ export function useWatchPartyCall() {
             localStreamRef.current = stream;
             if (localVideoRef.current) localVideoRef.current.srcObject = stream;
 
-            pcRef.current = createPeerConnection();
+            pcRef.current = createPeerConnection(isOfferer);
 
             if (isOfferer) {
               await createAndSendOffer("elected offerer");
@@ -402,7 +469,15 @@ export function useWatchPartyCall() {
               }
               clearTimeout(offerTimer);
               setStatus("answerer · offer received");
+              console.log(
+                "offer sections:", sectionCount(payload.description),
+                (payload.description.sdp.match(/^m=.*/gm) || []).map((m) => m.split(" ")[0]).join(" ")
+              );
               await applyRemoteDescription(payload.description);
+              // Must happen between setRemoteDescription and createAnswer:
+              // the transceivers only exist after the first, and the answer SDP
+              // is generated from their directions in the second.
+              await attachLocalMediaToAnswer();
               const answer = await pc.createAnswer();
               await pc.setLocalDescription(answer);
               signalingRef.current.sendSignal({ type: "answer", description: answer });

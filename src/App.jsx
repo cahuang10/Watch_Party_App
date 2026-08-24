@@ -25,8 +25,10 @@ function App() {
       <p className="status">{status}</p>
 
       <div className="videos">
-        {/* `muted` on the local box so you don't hear yourself. `mirrored` is
-            preview-only -- what gets sent to your partner is unmirrored. */}
+        {/* Your tile carries the controls: click anywhere on it to toggle the
+            camera, and the mic button appears on hover. `muted` so you don't
+            hear yourself; `mirrored` is preview-only -- what your partner
+            receives is unmirrored. */}
         <CameraBox
           videoRef={localVideoRef}
           label="You"
@@ -34,6 +36,9 @@ function App() {
           mirrored
           cameraOn={cameraOn}
           micOn={micOn}
+          interactive
+          onToggleCamera={toggleCamera}
+          onToggleMic={toggleMic}
         />
         {/* Display-only. Its camera/mic state arrives over the signaling channel
             as `media-state`; nothing here can change what the partner sends. */}
@@ -43,26 +48,6 @@ function App() {
           cameraOn={partnerCameraOn}
           micOn={partnerMicOn}
         />
-      </div>
-
-      {/* These act on *your* devices only, and your partner sees the result. */}
-      <div className="controls">
-        <button
-          type="button"
-          className={`control${cameraOn ? "" : " control--off"}`}
-          onClick={toggleCamera}
-          aria-pressed={!cameraOn}
-        >
-          {cameraOn ? "Camera on" : "Camera off"}
-        </button>
-        <button
-          type="button"
-          className={`control${micOn ? "" : " control--off"}`}
-          onClick={toggleMic}
-          aria-pressed={!micOn}
-        >
-          {micOn ? "Mic on" : "Mic muted"}
-        </button>
       </div>
     </div>
   );

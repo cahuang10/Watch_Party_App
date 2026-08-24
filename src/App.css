@@ -23,26 +23,3 @@
   padding: 0 12px;
   box-sizing: border-box;
 }
-
-.controls {
-  display: flex;
-  gap: 8px;
-}
-
-.control {
-  font-family: var(--mono);
-  font-size: 14px;
-  padding: 8px 16px;
-  border-radius: 999px;
-  border: 1px solid var(--border);
-  background: var(--bg);
-  color: var(--text-h);
-  cursor: pointer;
-}
-
-/* Off is the state worth noticing, so it's the one that gets the accent. */
-.control--off {
-  border-color: var(--accent-border);
-  background: var(--accent-bg);
-  color: var(--accent);
-}

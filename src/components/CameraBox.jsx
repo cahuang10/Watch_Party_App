@@ -1,12 +1,13 @@
 import "./CameraBox.css";
 
-// Presentational only -- it holds no state and decides nothing.
-//
 // `cameraOn` / `micOn` are the *real* device states. For "You" they're your own;
 // for "Partner" they arrive over the signaling channel as `media-state`
 // messages. They can't be inferred from the incoming stream: a muted mic sends
 // silence and a stopped camera sends nothing, and neither is distinguishable
 // from a network stall. So the state is told, not guessed.
+//
+// `interactive` is only ever true for your own tile. You can't turn your
+// partner's camera on or mute their mic -- their tile is display-only.
 function CameraBox({
   videoRef,
   label,
@@ -14,6 +15,9 @@ function CameraBox({
   mirrored = false,
   cameraOn = true,
   micOn = true,
+  interactive = false,
+  onToggleCamera,
+  onToggleMic,
 }) {
   return (
     <div className="camera-box">
@@ -38,9 +42,38 @@ function CameraBox({
         </div>
       )}
 
+      {interactive && (
+        <>
+          {/* The camera toggle is a transparent button covering the whole tile,
+              placeholder included, so clicking anywhere flips it. It's a
+              *sibling* of the mic button below, never its parent: a button
+              nested inside a button is invalid HTML and the inner one stops
+              receiving clicks. z-index keeps the stacking explicit instead of
+              depending on DOM order. */}
+          <button
+            type="button"
+            className="camera-box__surface"
+            onClick={onToggleCamera}
+            aria-pressed={!cameraOn}
+            aria-label={cameraOn ? "Turn camera off" : "Turn camera on"}
+          />
+          <button
+            type="button"
+            className={`camera-box__mic${micOn ? "" : " camera-box__mic--off"}`}
+            onClick={onToggleMic}
+            aria-pressed={!micOn}
+            aria-label={micOn ? "Mute microphone" : "Unmute microphone"}
+          >
+            {micOn ? "🎤" : "🔇"}
+          </button>
+        </>
+      )}
+
       <div className="camera-box__footer">
         <span className="camera-box__name">{label}</span>
-        {!micOn && (
+        {/* Only on the partner's tile. On your own the mic button already shows
+            the state, and two indicators for one thing is just noise. */}
+        {!interactive && !micOn && (
           <span className="camera-box__badge" title={`${label} is muted`}>
             🔇
           </span>
