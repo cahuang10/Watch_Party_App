@@ -18,6 +18,14 @@ export default defineConfig({
     outDir: "dist",
     emptyOutDir: true,
 
+    // This extension is never published (CLAUDE.md: loads from disk, secrets
+    // are already readable in the bundle) so there's no real reason to
+    // minify -- and a real reason not to: the "three consoles" workflow this
+    // project leans on means errors regularly get read straight out of
+    // dist/*.js, and Terser's single-line output makes a stack trace useless.
+    // Bundling/tree-shaking still happen; only the byte-squeezing pass is off.
+    minify: false,
+
     rollupOptions: {
       // Listed explicitly, which is also what stops the old web-app entry
       // (index.html -> src/main.jsx) from being built. Those files still exist;

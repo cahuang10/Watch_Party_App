@@ -20,9 +20,9 @@ An extension can. It injects its UI **into the page you're already watching**, d
 
 ### Layout: docked sidebar, not floating
 
-Panel docks right at 25% width; the page is squeezed to 75%. Collapses to a thin strip. Nothing overlaps, nothing needs dragging.
+Panel docks right at 25% width; the page is squeezed to 75%. Nothing overlaps, nothing needs dragging. (Collapsing to a thin strip is the target design but isn't built yet — Session 2E shipped the squeeze itself; collapse/expand is separate work, still open.)
 
-**The mechanism, because it is not obvious:** setting `width: 75%` on `<html>` is not enough. Sites like YouTube use `position: fixed` for headers and players, and fixed elements position against the viewport, not their parent — so they keep spanning the full screen and slide under the panel. Giving `<html>` a `transform` makes it the containing block for fixed descendants, so they get squeezed too. Then dispatch a `resize` event so the site re-lays-out. Both steps are required.
+**The mechanism, because it is not obvious:** setting `width: 75%` on `<html>` is not enough. Sites like YouTube use `position: fixed` for headers and players, and fixed elements position against the viewport, not their parent — so they keep spanning the full screen and slide under the panel. The fix is a `transform` on **`<body>`, not `<html>`** — that makes `<body>` the containing block for fixed descendants inside it, so they get squeezed too. It has to be `<body>` specifically: the panel itself is a fixed-position child of `<html>` (so that it can dock outside the page regardless of what the page does to its own `<body>`), and a transform placed on `<html>` would capture the panel as a containing-block descendant too, dragging it inside the squeezed page instead of leaving it pinned to the real right edge — measured on real youtube.com while building this. Then dispatch a `resize` event so the site re-lays-out. All three steps are required.
 
 This is the fragile part of the whole approach. It works on YouTube. Verify per-site before assuming.
 
@@ -89,7 +89,7 @@ The service worker's only job is brokering: toggle the panel, hand over the tab-
 | Hosting | **None** | Extension loads from disk. Vercel is out of the stack |
 | Summaries (V2) | Undecided — see section 7 | Deferred |
 
-**Build note:** an extension needs specific output files (`manifest.json`, service worker, content script, panel HTML/JS) rather than one bundle. Plain Vite with multiple entry points works. `@crxjs/vite-plugin` automates it — check its current maintenance status before depending on it. Confirm the build config in Session 1E before writing feature code.
+**Build note, resolved in Session 1E:** an extension needs specific output files (`manifest.json`, service worker, content script, panel HTML/JS) rather than one bundle. `@crxjs/vite-plugin` (2.7.1, actively maintained) was checked and declined in favor of a manual two-pass Vite build — see `vite.config.js` / `vite.config.content.js`. Content scripts can't be ES modules, so pass B builds `content.js` alone as an IIFE.
 
 ---
 
@@ -122,8 +122,8 @@ Sessions 1–4 were built against the web-app architecture. Marked below by what
 - [x] STUN + TURN config, ExpressTURN credentials
 
 ### MVP — extension shell
-- [ ] Session 1E: extension scaffold — manifest, service worker, content script, panel build pipeline
-- [ ] Session 2E: docked sidebar that squeezes the page, verified on YouTube **and** the other sites you actually use
+- [x] Session 1E: extension scaffold — manifest, service worker, content script, panel build pipeline
+- [x] Session 2E: docked sidebar that squeezes the page, verified on YouTube **and** other real sites (Twitch) — collapse/expand deferred, see Session Plan below
 - [ ] Session 3E: existing peer connection running inside the panel iframe; camera tiles live again
 - [ ] Session 4E: `chrome.tabCapture` replacing `getDisplayMedia`, including local audio playback so the sharer isn't muted
 - [ ] Session 5E: chat in the panel (live only)
@@ -159,8 +159,8 @@ Sessions 1–4 were built against the web-app architecture. Marked below by what
 **Session 1E — Extension scaffold**
 Manifest V3, service worker, content script, panel page. Get the Vite multi-entry build producing a loadable folder. Verify the load/reload loop before any features.
 
-**Session 2E — Docked sidebar and page squeeze**
-The `<html>` transform trick, the resize dispatch, collapse/expand. Test on YouTube first, then every site you'd actually use. *This session is the whole bet — if the squeeze can't be made to work on your sites, the architecture is wrong and it's better to know now.*
+**Session 2E — Docked sidebar and page squeeze — done**
+Delivered: the width/transform split (`<html>` width, `<body>` transform — not both on `<html>`, see section 1), the resize dispatch, verified on real YouTube and Twitch. **Collapse/expand was deliberately scoped out** — it needs panel→content-script messaging (the button lives in the React panel, the squeeze lives in the content script), a separate mechanism from the squeeze itself. Still open for a future session. *This was the whole bet, and it held — the architecture is validated on real sites.*
 
 **Session 3E — Rehome the peer connection**
 Move existing WebRTC code into the panel iframe. Camera permission at extension origin. Get the two-device camera call working again. Run the loopback test first.
@@ -180,7 +180,7 @@ Then: pause nudge, reactions, session logging, summaries — as originally plann
 **New to the extension**
 - **Three consoles, not one.** Service worker errors appear on the `chrome://extensions` card. Content script errors appear in the page's DevTools. Panel iframe errors need the iframe context selected in the DevTools dropdown. Looking in the wrong one wastes hours.
 - **Reload is two steps.** Refresh the extension card, *then* reload the page. Manifest changes always need the card refresh.
-- **`position: fixed` breaks the squeeze** without the `<html>` transform. See section 1.
+- **`position: fixed` breaks the squeeze** without a transform on the right element — `<body>`, not `<html>`. Putting it on `<html>` squeezes the page but also captures the panel itself, since the panel is a fixed child of `<html>` too. See section 1.
 - **Tab capture mutes the tab** for the sharer unless audio is played back locally.
 - **MediaStreams can't cross documents.** Stream *ids* can. This constrains where the connection lives.
 - **Hard navigation kills the panel iframe** and drops the call. Expected in MVP.

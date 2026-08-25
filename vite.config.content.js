@@ -21,6 +21,10 @@ export default defineConfig({
     // that still loads, which is confusing to debug.
     emptyOutDir: false,
 
+    // Same reasoning as vite.config.js: never published, so keep dist/
+    // readable for the content-script console rather than squeezing bytes.
+    minify: false,
+
     lib: {
       entry: resolve(import.meta.dirname, "src/content/content.js"),
       formats: ["iife"],
