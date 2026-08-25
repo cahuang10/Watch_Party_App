@@ -46,7 +46,7 @@ An extension injects UI into the page being watched and docks a sidebar, squeezi
 ## Locked decisions — don't revisit without asking me
 
 1. **Chrome extension, not a web app.** Decided after living with the web-app version. Don't propose going back.
-2. **Docked sidebar at 20%, page squeezed to 80%.** Not floating, not draggable, not picture-in-picture.
+2. **Docked sidebar at 25%, page squeezed to 75%.** Not floating, not draggable, not picture-in-picture.
 3. **Peer connection lives in the panel iframe** (`chrome-extension://` origin). Not the service worker (no DOM, sleeps), not a content script (page's world, dies on navigation). A `MediaStream` cannot cross documents, so whichever document holds the connection must render the video.
 4. **Tab capture via `chrome.tabCapture.getMediaStreamId()`.** No picker. Stream *ids* can cross contexts; streams cannot.
 5. **Viewer cannot pause the sharer's video.** Security boundary, not a missing feature. Solution is a "request pause" nudge.
@@ -74,7 +74,7 @@ Items 2–4 already exist in `screenShare.js` (`applyScreenQuality`, `preferVide
 
 - **Three consoles.** Service worker errors → the `chrome://extensions` card. Content script errors → the page's DevTools. Panel iframe errors → DevTools with the iframe context selected. Looking in the wrong one wastes hours. This is the single biggest difference from web development.
 - **Reload is two steps.** Refresh the extension card, then reload the page. Manifest changes *always* need the card refresh. No hot reload — this loop is meaningfully slower than Vite's and it's a real daily cost.
-- **`position: fixed` defeats the page squeeze.** Setting `width: 80%` on `<html>` isn't enough: fixed elements position against the viewport, not their parent, so YouTube's masthead and player span the full screen and slide under the panel. Give `<html>` a `transform` — that makes it the containing block for fixed descendants. Then `window.dispatchEvent(new Event('resize'))` so the site re-lays-out. Both steps required. **This is the most fragile part of the architecture** — verify per site.
+- **`position: fixed` defeats the page squeeze.** Setting `width: 75%` on `<html>` isn't enough: fixed elements position against the viewport, not their parent, so YouTube's masthead and player span the full screen and slide under the panel. Give `<html>` a `transform` — that makes it the containing block for fixed descendants. Then `window.dispatchEvent(new Event('resize'))` so the site re-lays-out. Both steps required. **This is the most fragile part of the architecture** — verify per site.
 - **Tab capture mutes the tab for the sharer** unless the captured audio is explicitly played back locally. Otherwise the sharer watches in silence and it looks like a broken capture.
 - **MediaStreams cannot cross documents.** Stream ids can. This is why the peer connection lives in the panel iframe (locked decision #3), and why an offscreen document — which would survive navigation — doesn't help: it can't render into the sidebar.
 - **Hard navigation destroys the panel iframe** and drops the call. SPA navigation (YouTube's normal browsing) does not. Accepted for MVP; V2 problem.
@@ -112,9 +112,21 @@ Items 2–4 already exist in `screenShare.js` (`applyScreenQuality`, `preferVide
 
 ## Current status
 
-**Working on:** Session 1E — extension scaffold. Nothing built yet in the new architecture.
+**Working on:** Session 2E — docked sidebar + page squeeze. Session 1E is done.
 
-**Prototype exists** (`watchparty-ext/`, throwaway): manifest, service worker with on-demand injection, content script that docks and squeezes, panel iframe with camera + local-only chat. No WebRTC, no signaling, no tab capture. Proves the docking works on YouTube. Not the foundation — reference it, don't extend it.
+**Correction:** earlier notes claimed a throwaway prototype in `watchparty-ext/`. It never existed — not on disk, not in any commit. There is no prior evidence the squeeze works on any site, which raises the stakes on 2E.
+
+**Session 1E built (verified by build + logic tests, not yet in a real Chrome):**
+- `public/manifest.json` — MV3, `<all_urls>`, no `default_popup`, `panel.html` web-accessible
+- `src/background/background.js` — toolbar click → `sendMessage`, falling back to `chrome.scripting.executeScript` then retry; quiet warning on `chrome://` pages
+- `src/content/content.js` — toggles the panel iframe. Double-injection guarded. **No squeeze yet.**
+- `src/panel/` + `panel.html` — placeholder React panel at the extension origin, `allow="camera; microphone"` already delegated
+- **Two-pass build.** `npm run build` = pass A (`panel.html` + `background.js`, ES modules, stable entry filenames) then pass B (`content.js`, IIFE, `emptyOutDir: false`). Two passes because **MV3 content scripts cannot be ES modules** and a module content script fails silently. `@crxjs/vite-plugin` was checked (2.7.1, healthy, vite ^8 ok) and declined in favour of owning the wiring.
+- `npm run dev` / `preview` removed — no dev server in this architecture. `.claude/launch.json` still points at the deleted `dev` script.
+
+**Known gap, decide before 4E:** DRM video cannot be captured. Netflix/Disney+/Max/Prime/Hulu render through Widevine's protected path and `chrome.tabCapture` gets a **black frame** (audio usually survives). Was equally true of `getDisplayMedia`, so not a regression — but it splits "watch anything" into streamable (YouTube, Twitch, Vimeo, embeds) vs. black frame. This is why Teleparty syncs playback instead of streaming video.
+
+**2E must resolve:** the panel is appended to `<html>`. A transform on `<html>` makes it the containing block for its own fixed descendants — including the panel — so `right: 0` would resolve against the squeezed 75% box and drag the panel inward. Whichever element gets the transform, the panel has to sit outside it.
 
 **Carried over from the web app, working, do not rebuild:**
 - Signaling over Supabase Realtime (`signaling.js`), verified cross-network (laptop wifi ↔ iPhone cellular)

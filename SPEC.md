@@ -20,9 +20,9 @@ An extension can. It injects its UI **into the page you're already watching**, d
 
 ### Layout: docked sidebar, not floating
 
-Panel docks right at 20% width; the page is squeezed to 80%. Collapses to a thin strip. Nothing overlaps, nothing needs dragging.
+Panel docks right at 25% width; the page is squeezed to 75%. Collapses to a thin strip. Nothing overlaps, nothing needs dragging.
 
-**The mechanism, because it is not obvious:** setting `width: 80%` on `<html>` is not enough. Sites like YouTube use `position: fixed` for headers and players, and fixed elements position against the viewport, not their parent — so they keep spanning the full screen and slide under the panel. Giving `<html>` a `transform` makes it the containing block for fixed descendants, so they get squeezed too. Then dispatch a `resize` event so the site re-lays-out. Both steps are required.
+**The mechanism, because it is not obvious:** setting `width: 75%` on `<html>` is not enough. Sites like YouTube use `position: fixed` for headers and players, and fixed elements position against the viewport, not their parent — so they keep spanning the full screen and slide under the panel. Giving `<html>` a `transform` makes it the containing block for fixed descendants, so they get squeezed too. Then dispatch a `resize` event so the site re-lays-out. Both steps are required.
 
 This is the fragile part of the whole approach. It works on YouTube. Verify per-site before assuming.
 

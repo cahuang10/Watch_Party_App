@@ -1,0 +1,61 @@
+/* Styles for the panel document only. This runs at the extension origin inside
+   an iframe, so nothing here can leak into the host page and nothing the host
+   page does can reach in. That isolation is a large part of why the panel is an
+   iframe rather than a div injected by the content script. */
+
+:root {
+  color-scheme: dark;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+  background: #16161a;
+  color: #e8e8ea;
+}
+
+.panel {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  height: 100%;
+  padding: 16px;
+  /* The page is on the left; a hard edge reads as "docked" rather than
+     "floating over". */
+  border-left: 1px solid #2c2c33;
+}
+
+.panel__header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.panel__title {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.panel__version {
+  font-size: 11px;
+  color: #8a8a93;
+}
+
+.panel__note {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.5;
+  color: #8a8a93;
+}
