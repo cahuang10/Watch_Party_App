@@ -96,14 +96,26 @@ export function useWatchPartyCall() {
     const sender = videoSenderRef.current;
 
     if (!next) {
-      // Off: unplug the track from the sender first, then stop the device. The
-      // sender -- the slot -- stays in place, so nothing renegotiates, but the
-      // camera is genuinely released and the light goes off.
-      await sender?.replaceTrack(null);
+      // Off. Order matters here, and it used to be the other way round.
+      //
+      // Release the DEVICE first, unconditionally. Unplugging the sender is a
+      // tidy-up; releasing the camera is the thing the user actually asked for,
+      // and it must not be able to fail because of the tidy-up. `replaceTrack`
+      // throws InvalidStateError on a stopped sender -- which is what a sender
+      // becomes when its peer connection gets closed underneath it, e.g. when
+      // presence churn tears down a peering session mid-toggle. With the
+      // unguarded `await` first, that throw skipped the stop() below and left
+      // the camera light on while the UI insisted the camera was off.
       stream?.getVideoTracks().forEach((track) => {
         track.stop();
         stream.removeTrack(track);
       });
+      try {
+        await sender?.replaceTrack(null);
+      } catch (err) {
+        // The device is already released by this point, so this is cosmetic.
+        console.warn("replaceTrack(null) failed after releasing camera:", err);
+      }
     } else if (stream) {
       // On: fetch a fresh track and plug it into the same slot. `stop()` is
       // permanent -- a stopped track can never be restarted -- so coming back
@@ -133,6 +145,17 @@ export function useWatchPartyCall() {
 
     // Re-assign so the element picks up the changed track set.
     if (localVideoRef.current) localVideoRef.current.srcObject = stream ?? null;
+
+    // What THIS tab still holds open, in its own words. If the camera light is
+    // on and this line shows no live video track, the device is held by
+    // something else -- another tab of this app (every dev server and the
+    // deployment share one signaling room, so stray tabs pair up and each opens
+    // its own camera) or another program entirely.
+    console.log(
+      `camera ${next ? "on" : "off"} — this tab now holds:`,
+      stream?.getTracks().map((t) => `${t.kind}:${t.readyState}`).join(" ") || "(no tracks)"
+    );
+
     sendMediaState();
   }, [sendMediaState]);
 

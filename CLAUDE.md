@@ -74,6 +74,7 @@ Browser defaults are conservative. When building or touching screen share, these
 
 - **Supabase Realtime has connection/message caps** on the free tier. Fine for two users, but worth knowing they exist.
 - **Read `SESSION_2_POSTMORTEM.md`** before debugging any signaling or connection problem. It explains the jargon, walks through all five attempts and why four of them failed, and gives a layer-by-layer diagnostic ladder.
+- **Read `SESSION_3_POSTMORTEM.md`** before touching transceivers, tracks, or anything that changes what is being sent. Covers the transceiver/track model, why the answerer must not pre-create transceivers, and — in Part 5 — the loopback test that finds this class of bug in minutes without a camera or a second device.
 - **Presence identity must be stable across reloads.** Session 2 burned several rounds on this. Keying presence on a per-load random id makes *every refresh* register a new entry that lingers until its socket times out — two people showed up as five participants, and every downstream heuristic (offerer election, partner selection) failed on the ghosts. Presence is now keyed on a per-tab id in `sessionStorage`. Verify with the `participants` count in the `presence sync` log: it must stay at 2 no matter how often either side reloads.
 - **Presence keeps multiple metas per key.** A key groups a participant's connections; it does not replace them. `Object.keys(state).length` is the participant count — flattening the metas counts *connections* and will mislead you. Collapse each key to its newest meta by `joinedAt`.
 - **A peer connection belongs to a peering session, not to the page.** When the partner reloads they are a new peer and need a brand-new `RTCPeerConnection`. Reusing a completed one produces `setRemoteDescription ... called in wrong state: stable`, and leaves the partner's frozen last frame on screen looking like a live connection.
@@ -85,7 +86,7 @@ Browser defaults are conservative. When building or touching screen share, these
 
 ## Current status
 
-**Working on:** Session 4 — screen share + quality tuning (not started)
+**Working on:** Session 4 — screen share + quality tuning (not started). **Read `SESSION_3_POSTMORTEM.md` Part 7 first** — adding a screen-share track forces real renegotiation, which breaks the fixed-role assumption the current design relies on.
 
 **Completed:**
 - Session 1 — Vite+React (JS) scaffolded, Supabase client wired (`src/lib/supabaseClient.js`), deployed to Vercel.
