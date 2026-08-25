@@ -1,122 +1,144 @@
-# Watch Party App
+# Watch Party — Chrome extension
 
-A private, two-person watch-together app: side-by-side camera boxes plus screen sharing, so my partner and I can watch anything together and still see each other. Personal project, not shipped to anyone else.
+A private, two-person watch-together tool: camera tiles and chat docked beside whatever we're watching. Personal project, not shipped to anyone else.
 
-**Full spec, decisions, and milestone plan: see `SPEC.md`.** Read it before starting work.
+**Full spec: see `SPEC.md`.** Read it before starting work.
+
+**Architecture changed after Session 4.** This was a React app on Vercel; it is now a Chrome extension. The WebRTC layer survives intact — signaling, transceiver slots, TURN, and both postmortems still apply. Only the shell changed. Read "What changed and why" below before assuming any file is obsolete.
 
 ---
 
 ## How I want to work
 
-I'm a CS major, but new to web development and to WebRTC specifically. I want to **understand** this codebase, not just have it work.
+I'm a CS major, new to web development and to WebRTC. I want to **understand** this codebase, not just have it work.
 
-- **Explain before building.** For anything WebRTC-related, walk me through what the step does and why before writing the code. The peer connection, ICE negotiation, and track handling are the parts I most want to actually learn.
-- **Prefer clarity over cleverness.** Readable, explicit code beats terse or abstracted code here. Don't optimize prematurely.
-- **Comment non-obvious decisions**, especially anything WebRTC or Supabase Realtime related.
-- **One milestone per session.** Don't jump ahead to features from later sessions, even if they seem quick. If something later would change the current design, flag it and let me decide.
-- **Ask before adding dependencies.** Small surface area is a goal — native WebRTC APIs are intentional, no wrapper library unless we discuss it.
+- **Explain before building.** Especially anything WebRTC or Manifest V3.
+- **Prefer clarity over cleverness.** Readable and explicit beats terse.
+- **Comment non-obvious decisions.**
+- **One milestone per session.** Don't jump ahead. If something later would change the current design, flag it and let me decide.
+- **Ask before adding dependencies.** Native APIs are intentional.
+
+---
+
+## What changed and why
+
+Sessions 1–4 built a React app on Vercel. It worked. The experience was bad: to watch something the sharer opened an app tab, opened a content tab, clicked share, picked the tab from a browser picker, opened a floating PiP window, and manually resized the content window. A web page structurally cannot do better — the picker is a security requirement and a page can't resize a window it didn't open.
+
+An extension injects UI into the page being watched and docks a sidebar, squeezing the page into the remaining width. No second tab, no floating window, no picker, no resizing.
+
+**Dead:** Vercel, Document Picture-in-Picture, `getDisplayMedia`, the Stage component for the sharer, old locked decision #7.
+**Alive and unchanged:** `signaling.js`, the 4-slot transceiver design in `mediaSlots.js`, `loopbackTest.js`, camera/mic control logic, `media-state` messages, quality tuning and codec preference in `screenShare.js`, ExpressTURN config, both postmortems.
 
 ---
 
 ## Stack
 
-- **Frontend:** React + Vite
-- **Hosting:** Vercel
-- **DB / Realtime / Auth:** Supabase (Postgres for chat + session logs, Realtime for both signaling and chat)
-- **Video + screen share:** native WebRTC (`RTCPeerConnection`, `getUserMedia`, `getDisplayMedia`) — no library
-- **TURN:** ExpressTURN (free tier — 1000GB/mo, UDP+TCP on 3478, also 80/443 for firewall traversal)
-- **Summaries (V2 only):** undecided — hosted API vs local model via Ollama. Don't assume either; see section 7 of SPEC.md. Not relevant until session 9.
+- **Shell:** Chrome extension, Manifest V3
+- **Panel UI:** React + Vite, multi-entry build (verify the build config in Session 1E)
+- **Signaling / DB:** Supabase — unchanged
+- **Media:** native WebRTC + `chrome.tabCapture`
+- **TURN:** ExpressTURN (1000GB/mo free, UDP+TCP 3478, also 80/443)
+- **Hosting:** none. Extension loads from disk.
+- **Summaries (V2):** undecided — see section 7 of SPEC.md. Not relevant until later.
 
 ---
 
 ## Locked decisions — don't revisit without asking me
 
-These were worked through deliberately. If you think one is wrong, say so and explain why, but don't quietly design around it.
-
-1. **Screen share only for content.** No per-service playback sync (no YouTube IFrame API) in MVP or V1. One system handles all content sources.
-2. **Tab sharing, not window or full screen.** Tab audio capture only works reliably for tab shares in Chrome. The UI should tell the user this explicitly.
-3. **Viewer cannot pause the sharer's video.** This is a WebRTC security boundary, not a missing feature. The solution is a "request pause" nudge — viewer sends a message, sharer sees a notification and pauses manually.
-4. **STUN + TURN configured from day one.** ~10-20% of connections fail without a TURN relay (symmetric NAT, UDP-blocking firewalls). These are structural network properties — reloading does not fix them.
-5. **Chrome desktop only for now.** iOS Safari can't do `getDisplayMedia()` tab sharing, so the sharer must be on desktop.
-6. **Two people only.** No SFU, no group call support. Direct P2P is the correct architecture at this scale.
-7. **Camera boxes live in a Document Picture-in-Picture window, not the app tab.** Both boxes (yours and partner's) side by side in one small floating panel that stays on top while browsing/sharing the content tab. Default position top-right; draggable — this comes free from the browser API, don't build custom drag logic. Confirm current browser support for Document PiP before relying on it; have a fallback (boxes stay in the app tab) if unavailable.
-
----
-
-## Screen share quality settings
-
-Browser defaults are conservative. When building or touching screen share, these should be applied:
-
-- Request 1080p / 30fps (or 60) explicitly in `getDisplayMedia()` constraints
-- Set `contentHint = "motion"` on the video track (favors smooth motion over static sharpness — correct for movies)
-- Raise the bitrate cap via `RTCRtpSender.setParameters()` to 2.5–4 Mbps for 1080p30
-- Prefer VP9 or AV1 over default H.264 in SDP negotiation
-
-Implemented in `src/lib/screenShare.js` (`captureScreen`, `applyScreenQuality`, `preferVideoCodecs`) — see Current status for what's verified so far vs. still needs a real screen to check.
+1. **Chrome extension, not a web app.** Decided after living with the web-app version. Don't propose going back.
+2. **Docked sidebar at 20%, page squeezed to 80%.** Not floating, not draggable, not picture-in-picture.
+3. **Peer connection lives in the panel iframe** (`chrome-extension://` origin). Not the service worker (no DOM, sleeps), not a content script (page's world, dies on navigation). A `MediaStream` cannot cross documents, so whichever document holds the connection must render the video.
+4. **Tab capture via `chrome.tabCapture.getMediaStreamId()`.** No picker. Stream *ids* can cross contexts; streams cannot.
+5. **Viewer cannot pause the sharer's video.** Security boundary, not a missing feature. Solution is a "request pause" nudge.
+6. **STUN + TURN from day one.** ~10–20% of connections fail without a relay. Structural, not transient — reloading doesn't fix it.
+7. **Chrome desktop only.** No Firefox, no Safari, no mobile sharer.
+8. **Two people only.** No SFU. Direct P2P is correct at this scale.
+9. **Keep the 4-slot transceiver design.** Changing capture source doesn't change negotiation. A share is still a `replaceTrack` into a pre-reserved slot, never a new offer.
 
 ---
 
-## Known tricky areas
+## Quality settings for tab capture
 
-- **Renegotiation, avoided.** Adding a screen-share track via `addTrack` would trigger ICE renegotiation on a live connection — the risk flagged here through Session 3. Session 4 sidesteps it: the offerer reserves **four** transceiver slots up front (mic, camera, screen audio, screen video) instead of two, so starting a share is a `replaceTrack` into an already-negotiated slot, exactly like the camera. See `src/lib/mediaSlots.js` for the slot table. Verified with the loopback test (now `src/lib/loopbackTest.js`, `window.__loopbackTest()` in dev): 4 transceivers on both sides, every `mid` non-null, every `currentDirection: "sendrecv"`, and `negotiationneeded` fires **zero** times when a share starts. Perfect negotiation (polite/impolite peers, rollback) was deliberately not built — nothing on the current roadmap forces a renegotiation, so there's nothing for it to resolve yet.
-- **`replaceTrack` is how you change media *without* renegotiating.** A transceiver is a durable slot in the connection; a track is just what's currently plugged into it. `sender.replaceTrack(x)` swaps the contents without touching offer/answer as long as the kind matches, and `replaceTrack(null)` stops sending with the slot intact. `removeTrack`/`addTrack` fire `negotiationneeded` instead — avoid them while glare is unhandled. The **offerer** reserves both slots with `addTransceiver` at connection time even when there is no track yet, so enabling the camera later can never renegotiate. Capture the sender the moment you create it: `getSenders().find((s) => s.track?.kind === "video")` quietly finds nothing after a `replaceTrack(null)`.
-- **Only `addTrack` transceivers get associated with an incoming offer; `addTransceiver` ones do not.** This cost a session. If the *answerer* pre-creates transceivers before `setRemoteDescription(offer)`, they are never adopted: it ends up holding four — two orphans with `mid: null` that never send, plus two `recvonly` ones built from the SDP — while the offerer goes `sendonly`. The answer still carries the right two m-lines and **nothing throws**, so the symptom is one-way video with a black box on the offerer's side and no error anywhere. The rule: **the offerer defines the m-lines, the answerer fills in what the offer created.** The answerer builds its connection with no transceivers, then between `setRemoteDescription` and `createAnswer` walks `getTransceivers()`, `replaceTrack`s its local tracks in, and sets `direction = "sendrecv"` (they arrive `recvonly`). See `attachLocalMediaToAnswer()` in `src/lib/useWatchPartyCall.js`. As of Session 4 this mapping is table-driven — 4 slots, not 2 — via `resolveSlots()` in `src/lib/mediaSlots.js`, but the rule itself hasn't changed.
-- **Never touch a stopped transceiver, and never let the answerer's attach loop throw.** Setting `.direction` or calling `replaceTrack` on a stopped/rejected transceiver throws `InvalidStateError`. In `attachLocalMediaToAnswer()` that is fatal in a non-obvious way: it aborts *before* `createAnswer()`, so no answer is ever sent and the offerer sits at `have-local-offer` forever with healthy ICE and no error on its side. Skip anything whose `direction` or `currentDirection` is `"stopped"`, and skip kinds other than audio/video — an offer can carry sections we didn't ask for.
-- **`have-local-offer` + `iceConnectionState: new` means the answer never came back — it is not an ICE or TURN problem.** Relay candidates in the offerer's list prove TURN allocated fine. Look at the *other* device: its status line and console hold the actual failure.
-- **An `RTCIceCandidate` does not survive JSON with its useful fields.** `toJSON()` serialises only `candidate`, `sdpMid`, `sdpMLineIndex` and `usernameFragment`; `type`, `protocol` and `address` are *parsed* properties and come out `undefined` on the far side — which is why the remote-candidate log read `undefined undefined undefined` and the relay-address comparison was silently doing nothing. Rebuild with `new RTCIceCandidate(payload.candidate)` before logging or adding it.
-- **One Supabase channel name means one global room.** `CHANNEL_NAME` is a constant in `src/lib/signaling.js`, so every tab on every localhost dev server *and* the Vercel deployment all join the same room. Stale tabs show up as extra participants and the offerer election thrashes through them one by one before settling. If `presence sync` reports more than 2, close tabs and kill stray `vite` processes before debugging anything else.
-- **Async device work needs a generation counter, not just a state check.** Opening a camera takes ~300ms, so clicking the toggle faster than that leaves several `getUserMedia` calls in flight. A guard that only re-checks `cameraOn` passes for *all* of them once the state has flipped back to on, and each one attaches a track — the stream ends up with two video tracks and the abandoned one **holds the camera device open**, so the light stays lit while the UI says "camera off". Claim an op number at the top of the toggle (`const op = ++cameraOpRef.current`) and discard the result if it no longer matches. Reproduced and fixed 2026-08-24: rapid off/on/off/on left 2 live tracks before, 1 after.
-- **`requestVideoFrameCallback` does not fire while the document is hidden.** Chrome suspends video frame callbacks for background tabs, so any "wait until the first frame paints" logic silently degrades into "wait out the whole timeout." Measured: 0ms when guarded with `document.hidden`, 3700ms when not. **This is the normal case from Session 4 onward** — the sharer sits on the content tab with the app tab backgrounded. Guard with `document.hidden` up front, and listen for `visibilitychange` to bail if the tab is backgrounded mid-wait.
-- **Releasing the camera is not free, and nothing can make it free.** Camera light off ⟺ device closed ⟺ cold `getUserMedia` on the way back (device power-up plus exposure settling). Every possible latency lever amounts to keeping the device open longer, which means the light stays lit longer. If a toggle ever feels instant *and* the light goes out, something is still holding the camera — check for a second tab.
-- **Check the transceivers, not the picture.** One-way video looks identical to a dozen unrelated faults. The cheap, decisive test needs no camera at all: build two `RTCPeerConnection`s in one page, run a full offer/answer, and assert each ends with exactly 2 transceivers, every `mid` non-null, every `currentDirection === "sendrecv"`. Fake tracks from `canvas.captureStream()` and `AudioContext.createMediaStreamDestination()` stand in for real devices. Four transceivers on one side, or any `recvonly`/`sendonly`, is the bug above.
-- **Mute is not detectable from the receiving end.** A muted mic sends silence and a stopped camera sends nothing, and neither is distinguishable from a network stall. Device state has to be *told* over the signaling channel (`media-state`), never inferred from the stream.
-- **An idle screen-share receiver reports `track.muted === false`.** Same problem as above, found while verifying Session 4: because the screenAudio/screenVideo slots are reserved at connection time (previous bullet), their receivers exist — and are *not* muted — long before anyone has actually shared anything. "Is my partner sharing" is therefore exactly as untellable from the stream as camera/mic state, and rides the same `media-state` message (`sharing: true/false`), never inferred from the track.
-- **Document PiP API support.** Newer, Chromium-specific. Check current support before building it; have a fallback in mind. Still not built as of Session 4 — decision unchanged, revisit now that the camera-rail block it will hold exists and is already isolated (`camera-rail` in `App.css`/`App.jsx`).
-- **Audio feedback loops.** Mic + tab audio + speakers can echo badly. Handle echo cancellation explicitly; assume headphones as the fallback.
-- **TURN sits silently broken.** It only activates when direct connection fails, so a bad config looks fine until it matters. Test with `iceTransportPolicy: "relay"` to force a TURN-only connection and confirm it works.
-- **Measured 2026-08-24, single-machine loopback against ExpressTURN:** allocation and credentials work; a **relay ↔ non-relay** pair connects (selected `relay/62.210.205.50 <-> srflx/140.82.222.1`), which is the case that actually matters — one peer stuck behind symmetric NAT. A **relay ↔ relay** pair *failed*, but both test peers shared one machine and one public IP, so that is hairpinning through a single server and is not conclusive for two real devices on different networks. Resolve it with `?relay=1` on both real devices.
-- **Don't over-read a multi-IP TURN host.** An earlier note here claimed that peers allocated on different IPs of `free.expressturn.com` can never relay to each other. That is not how TURN works: a server relays to any peer it has a permission for, regardless of which server that peer used, and extra resolved IPs mean *more* usable candidates, not fewer. In testing both peers landed on the same IP anyway. Don't switch providers on the strength of two different relay addresses in a log.
+Same levers as before, different capture call:
 
-- **Supabase Realtime has connection/message caps** on the free tier. Fine for two users, but worth knowing they exist.
-- **Read `SESSION_2_POSTMORTEM.md`** before debugging any signaling or connection problem. It explains the jargon, walks through all five attempts and why four of them failed, and gives a layer-by-layer diagnostic ladder.
-- **Read `SESSION_3_POSTMORTEM.md`** before touching transceivers, tracks, or anything that changes what is being sent. Covers the transceiver/track model, why the answerer must not pre-create transceivers, and — in Part 5 — the loopback test that finds this class of bug in minutes without a camera or a second device.
-- **Presence identity must be stable across reloads.** Session 2 burned several rounds on this. Keying presence on a per-load random id makes *every refresh* register a new entry that lingers until its socket times out — two people showed up as five participants, and every downstream heuristic (offerer election, partner selection) failed on the ghosts. Presence is now keyed on a per-tab id in `sessionStorage`. Verify with the `participants` count in the `presence sync` log: it must stay at 2 no matter how often either side reloads.
-- **Presence keeps multiple metas per key.** A key groups a participant's connections; it does not replace them. `Object.keys(state).length` is the participant count — flattening the metas counts *connections* and will mislead you. Collapse each key to its newest meta by `joinedAt`.
-- **A peer connection belongs to a peering session, not to the page.** When the partner reloads they are a new peer and need a brand-new `RTCPeerConnection`. Reusing a completed one produces `setRemoteDescription ... called in wrong state: stable`, and leaves the partner's frozen last frame on screen looking like a live connection.
-- **Signals need `to` / `from` / `session`.** Supabase broadcast reaches every channel member, so without addressing, a third participant's traffic gets processed as if it were the partner's. The `session` check specifically prevents a stale offer from renegotiating a connection that is already up.
-- **Use `pagehide`, not `beforeunload`,** to untrack presence on exit — iOS Safari/WebKit frequently doesn't fire `beforeunload`, and the phone is the device most likely to be closed abruptly.
-- **Glare is not handled, and — for now — doesn't need to be.** Conflicting offers are ignored, safe only because roles are fixed and deterministic: exactly one side ever offers. This was expected to break in Session 4 (either person sharing implies either person might renegotiate), but it doesn't — screen share never triggers an offer at all (see "Renegotiation, avoided" above), so roles are still fixed. This stops being safe the moment something *does* force a renegotiation (a data channel, a third real m-line kind) — that's where the W3C "perfect negotiation" pattern (polite/impolite peers, rollback) becomes necessary. Deliberately deferred until something on the roadmap actually needs it.
+- Request 1080p/30fps explicitly in the constraints alongside `chromeMediaSource: "tab"`
+- `contentHint = "motion"` on the video track
+- Bitrate cap via `RTCRtpSender.setParameters()` — 2.5–4 Mbps for 1080p30
+- Prefer VP9 or AV1 in SDP negotiation
+
+Items 2–4 already exist in `screenShare.js` (`applyScreenQuality`, `preferVideoCodecs`) and carry over. Only capture is rewritten.
+
+---
+
+## Known tricky areas — extension
+
+- **Three consoles.** Service worker errors → the `chrome://extensions` card. Content script errors → the page's DevTools. Panel iframe errors → DevTools with the iframe context selected. Looking in the wrong one wastes hours. This is the single biggest difference from web development.
+- **Reload is two steps.** Refresh the extension card, then reload the page. Manifest changes *always* need the card refresh. No hot reload — this loop is meaningfully slower than Vite's and it's a real daily cost.
+- **`position: fixed` defeats the page squeeze.** Setting `width: 80%` on `<html>` isn't enough: fixed elements position against the viewport, not their parent, so YouTube's masthead and player span the full screen and slide under the panel. Give `<html>` a `transform` — that makes it the containing block for fixed descendants. Then `window.dispatchEvent(new Event('resize'))` so the site re-lays-out. Both steps required. **This is the most fragile part of the architecture** — verify per site.
+- **Tab capture mutes the tab for the sharer** unless the captured audio is explicitly played back locally. Otherwise the sharer watches in silence and it looks like a broken capture.
+- **MediaStreams cannot cross documents.** Stream ids can. This is why the peer connection lives in the panel iframe (locked decision #3), and why an offscreen document — which would survive navigation — doesn't help: it can't render into the sidebar.
+- **Hard navigation destroys the panel iframe** and drops the call. SPA navigation (YouTube's normal browsing) does not. Accepted for MVP; V2 problem.
+- **Content scripts don't retroactively inject.** Pages open before install have none, and `chrome://` pages never do. The service worker must try `sendMessage`, catch the failure, and inject via `chrome.scripting.executeScript`. The bare "Could not establish connection. Receiving end does not exist." error means exactly this.
+- **Secrets are baked into the bundle.** Vite inlines env vars at build time, so the Supabase anon key and TURN credentials are readable by anyone with the folder. Fine for two people. Not fine if published.
+- **Sites can fight injected UI.** z-index wars, CSP, layout assumptions. YouTube behaves. Test the others before committing.
+
+## Known tricky areas — WebRTC (carried over, all still true)
+
+- **Renegotiation, avoided.** The offerer reserves **four** transceiver slots up front (mic, camera, screen audio, screen video), so starting a share is a `replaceTrack` into an already-negotiated slot, exactly like the camera. See `mediaSlots.js`. Verified with the loopback test: 4 transceivers both sides, every `mid` non-null, every `currentDirection: "sendrecv"`, `negotiationneeded` fires **zero** times when a share starts. Perfect negotiation was deliberately not built — nothing forces a renegotiation yet.
+- **`replaceTrack` is how you change media *without* renegotiating.** A transceiver is a durable slot; a track is what's plugged into it. `replaceTrack(x)` swaps contents without touching offer/answer if the kind matches; `replaceTrack(null)` stops sending with the slot intact. `removeTrack`/`addTrack` fire `negotiationneeded` — avoid while glare is unhandled. The **offerer** reserves slots with `addTransceiver` at connection time even with no track yet. Capture the sender when you create it: `getSenders().find(s => s.track?.kind === "video")` quietly finds nothing after `replaceTrack(null)`.
+- **Only `addTrack` transceivers get associated with an incoming offer; `addTransceiver` ones do not.** This cost a session. If the *answerer* pre-creates transceivers before `setRemoteDescription(offer)` they're never adopted — orphans with `mid: null` that never send, plus `recvonly` ones from the SDP. Nothing throws; the symptom is one-way video with a black box and no error. **The offerer defines the m-lines, the answerer fills in what the offer created.** The answerer builds with no transceivers, then between `setRemoteDescription` and `createAnswer` walks `getTransceivers()`, `replaceTrack`s local tracks in, and sets `direction = "sendrecv"` (they arrive `recvonly`). See `attachLocalMediaToAnswer()`. Table-driven via `resolveSlots()` since Session 4.
+- **Never touch a stopped transceiver, and never let the answerer's attach loop throw.** Setting `.direction` or calling `replaceTrack` on a stopped/rejected transceiver throws `InvalidStateError`, which aborts *before* `createAnswer()` — so no answer is ever sent and the offerer sits at `have-local-offer` forever with healthy ICE and no error on its side. Skip anything `"stopped"`, skip kinds other than audio/video.
+- **`have-local-offer` + `iceConnectionState: new` means the answer never came back.** Not an ICE or TURN problem. Relay candidates in the offerer's list prove TURN allocated fine. Look at the *other* device.
+- **An `RTCIceCandidate` does not survive JSON with its useful fields.** `toJSON()` serialises only `candidate`, `sdpMid`, `sdpMLineIndex`, `usernameFragment`. `type`, `protocol`, `address` are parsed properties and come out `undefined`. Rebuild with `new RTCIceCandidate(payload.candidate)` before logging.
+- **One Supabase channel name means one global room.** `CHANNEL_NAME` is a constant in `signaling.js`, so every dev instance joins the same room. If `presence sync` reports more than 2, close stale tabs before debugging anything else.
+- **Async device work needs a generation counter.** Opening a camera takes ~300ms; clicking faster leaves several `getUserMedia` calls in flight, and a guard that only re-checks `cameraOn` passes for all of them. The abandoned track **holds the camera open** — light stays lit while the UI says off. Claim an op number at the top (`const op = ++cameraOpRef.current`) and discard stale results.
+- **`requestVideoFrameCallback` does not fire while the document is hidden.** Guard with `document.hidden` and listen for `visibilitychange`. Measured 0ms guarded vs 3700ms not.
+- **Releasing the camera is not free, and nothing can make it free.** Light off ⟺ device closed ⟺ cold `getUserMedia` on the way back. If a toggle feels instant *and* the light goes out, something is still holding the camera.
+- **Check the transceivers, not the picture.** One-way video looks identical to a dozen unrelated faults. Build two `RTCPeerConnection`s in one page, run a full offer/answer, assert transceiver count, non-null `mid`, `currentDirection === "sendrecv"`. Fake tracks from `canvas.captureStream()` stand in for devices. `loopbackTest.js`, `window.__loopbackTest()`.
+- **Mute is not detectable from the receiving end.** A muted mic sends silence, a stopped camera sends nothing, and neither is distinguishable from a network stall. Device state must be *told* over signaling (`media-state`), never inferred.
+- **An idle screen-share receiver reports `track.muted === false`.** Because the slots are reserved at connection time, their receivers exist and aren't muted long before anyone shares. "Is my partner sharing" rides the same `media-state` message (`sharing: true/false`).
+- **Presence identity must be stable across reloads.** Keying on a per-load random id makes every refresh a new lingering entry — two people showed up as five. Keyed on a per-tab id in `sessionStorage`. Verify: `participants` in `presence sync` stays at 2 no matter how often either side reloads.
+- **Presence keeps multiple metas per key.** `Object.keys(state).length` is the participant count; flattening metas counts *connections*. Collapse each key to its newest meta by `joinedAt`.
+- **A peer connection belongs to a peering session, not to the page.** When the partner reloads they're a new peer needing a brand-new `RTCPeerConnection`. Reusing a completed one gives `setRemoteDescription ... called in wrong state: stable` and leaves a frozen last frame that looks live.
+- **Signals need `to` / `from` / `session`.** Broadcast reaches every channel member. The `session` check prevents a stale offer renegotiating a live connection.
+- **Use `pagehide`, not `beforeunload`,** to untrack presence.
+- **Glare is not handled, and doesn't need to be yet.** Roles are fixed and deterministic; exactly one side ever offers. Screen share never triggers an offer (4-slot design). This stops being safe the moment something *does* force renegotiation — then implement W3C perfect negotiation.
+- **TURN measured 2026-08-24, single-machine loopback against ExpressTURN:** allocation and credentials work; **relay ↔ non-relay** connects (`relay/62.210.205.50 <-> srflx/140.82.222.1`) — the case that matters. **Relay ↔ relay** failed, but both peers shared one machine and one public IP, so that's hairpinning and not conclusive. Resolve with `?relay=1` on both real devices.
+- **Don't over-read a multi-IP TURN host.** A server relays to any peer it has a permission for, regardless of which server that peer used. Extra resolved IPs mean more candidates, not fewer. Don't switch providers over two relay addresses in a log.
+- **Read `SESSION_2_POSTMORTEM.md`** before debugging signaling or connection problems.
+- **Read `SESSION_3_POSTMORTEM.md`** before touching transceivers or tracks. Part 5 has the loopback test.
 
 ---
 
 ## Current status
 
-**Working on:** Session 4 — screen share + quality tuning. **Built and loopback-verified, not yet run against a real screen or a second device.** See the Session 4 entry below before treating any of it as done.
+**Working on:** Session 1E — extension scaffold. Nothing built yet in the new architecture.
 
-**Completed:**
-- Session 1 — Vite+React (JS) scaffolded, Supabase client wired (`src/lib/supabaseClient.js`), deployed to Vercel.
-- Session 2 — Signaling over Supabase Realtime (`src/lib/signaling.js`) + working two-person WebRTC camera call, verified cross-network (laptop on wifi ↔ iPhone on cellular). Survives either side refreshing independently.
-- Session 3 — Camera box UI plus **real** camera and mic controls. The call moved out of `App.jsx` into `src/lib/useWatchPartyCall.js` (App.jsx is now presentational, `CameraBox.jsx` is a dumb tile). The camera opens only once a partner is actually present and is released when they leave — no camera light while you sit alone waiting. Camera off does `replaceTrack(null)` + `track.stop()`, so the device is genuinely released; mic mute does `track.enabled = false`, which is instant and leaves the device open. Both states ride the signaling channel as a `media-state` message, so each tile shows the *other* person's real state. Controls live inside your own tile: clicking anywhere on it (placeholder included) toggles the camera, and the mic button is a circle at bottom-centre that appears on hover — and stays visible while muted. The partner's tile is display-only. Known trade-off: a partner reload is a leave-then-join, so your camera light blinks off and on — add a grace timer if it grates.
+**Prototype exists** (`watchparty-ext/`, throwaway): manifest, service worker with on-demand injection, content script that docks and squeezes, panel iframe with camera + local-only chat. No WebRTC, no signaling, no tab capture. Proves the docking works on YouTube. Not the foundation — reference it, don't extend it.
 
-**Session 4 — screen share (built, device verification pending):**
-The renegotiation problem `SESSION_3_POSTMORTEM.md` Part 7 predicted didn't happen — see the rewritten "Renegotiation, avoided" entry in Known tricky areas above for the full explanation. In short: the connection now reserves four transceiver slots (mic, camera, screen audio, screen video) instead of two, so a share is a `replaceTrack`, not a new offer. New files: `src/lib/mediaSlots.js` (the slot table + `resolveSlots()`), `src/lib/screenShare.js` (`getDisplayMedia` capture, quality tuning, codec preference), `src/lib/loopbackTest.js` (`window.__loopbackTest()` in dev — run this first if anything about the connection looks wrong). Either person can share; a `sharing` field on the existing `media-state` message plus a tab-id tie-break (same shape as `need-offer`'s) keeps it to one at a time if both click at once. Layout: shared content is the `Stage` (`src/components/Stage.jsx`), filling most of the viewport; the camera tiles shrank into a `camera-rail` that floats over its top-left corner — deliberately self-contained, since it's the block that later lifts into the Document Picture-in-Picture window (locked decision #7, still not built, revisit once this settles).
-**Verified:** the loopback test passes — 4 transceivers both sides, every `mid` non-null, every `currentDirection: "sendrecv"`, `negotiationneeded` fires zero times when a share starts, both peers stay `signalingState: "stable"`. Presence/offerer-answerer election still correct with the 4-section offer (checked live, camera itself blocked by the test sandbox).
-**Not yet verified — do these before relying on it:** the actual `getDisplayMedia()` picker end to end (tab audio, the window/screen warning), measured codec/bitrate via `getStats()` filtered to the screen sender (want VP9, ~3 Mbps), Chrome's native "Stop sharing" bar resetting the UI, camera/mic toggles still working *while* a share is live, the cross-device pass (laptop ↔ iPhone, phone has no Share button), and `?relay=1` on both devices with a real 3 Mbps share running over it.
+**Carried over from the web app, working, do not rebuild:**
+- Signaling over Supabase Realtime (`signaling.js`), verified cross-network (laptop wifi ↔ iPhone cellular)
+- Peer connection, presence, offerer election, survives either side refreshing
+- 4-slot transceiver design (`mediaSlots.js`), loopback-verified
+- Camera/mic controls with device release and generation counters
+- Quality tuning + codec preference (`screenShare.js`) — capture step needs rewriting, rest stands
+- `loopbackTest.js`
+- STUN + TURN with ExpressTURN
 
-**Partly verified:** TURN allocates, and a relay candidate has carried a real connection to a non-relay peer (loopback test, 2026-08-24). Still unverified: **relay on both ends at once**, and the relay path across two genuinely different networks. Load with `?relay=1` on *both* devices to close it out — see "TURN sits silently broken" below.
+**Never verified against real devices, still open:** measured codec/bitrate via `getStats()` (want VP9, ~3 Mbps), Chrome's stop-sharing behaviour, camera/mic toggles while a share is live, cross-device pass, `?relay=1` on both devices with a real 3 Mbps share.
 
-<!-- Update these two lines as you go so context carries between sessions. -->
+<!-- Update these lines as you go so context carries between sessions. -->
 
 ---
 
-## Session plan (short form — details in SPEC.md)
+## Session plan (details in SPEC.md)
 
-1. Scaffold + Supabase wired up + deployed to Vercel
-2. Signaling over Supabase Realtime + first WebRTC peer connection (camera only)
-3. Camera box UI + hide/show toggle
-4. Screen share + quality tuning
-5. Chat (live first, then persisted)
+1. **1E** — Extension scaffold: manifest, service worker, content script, Vite multi-entry build, load/reload loop
+2. **2E** — Docked sidebar + page squeeze. *The whole bet. Test on every site you'd actually use.*
+3. **3E** — Rehome the peer connection into the panel iframe; camera call working again
+4. **4E** — Tab capture replacing `getDisplayMedia`; handle the muted-tab problem
+5. **5E** — Chat (live, then persisted)
 6. Request-pause nudge
-7. Emoji reaction overlay
-8. Session logging (timestamps, duration, history view)
-9. Conversation summaries via Anthropic API
+7. Emoji reactions (overlay on the page — the extension can do this properly now)
+8. Session logging
+9. Summaries

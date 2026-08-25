@@ -1,61 +1,79 @@
-# Watch Party App — Project Spec
+# Watch Party — Project Spec
 
-A private, two-person watch-together app: side-by-side camera boxes plus screen sharing, so you and your partner can watch anything together and still see each other. Personal project, no subscription, built to be used — not shipped to strangers.
+A private, two-person watch-together tool: camera tiles and chat docked beside whatever you're watching, so you and your partner can watch anything together and still see each other. Personal project, no subscription, built to be used — not shipped to strangers.
+
+**Architecture: Chrome extension.** Changed from a web app after Session 4. See section 1.
 
 ---
 
 ## 1. Foundational Decisions
 
-These three were worked out before any code, and everything below follows from them.
+### Why an extension, not a web app
 
-### Content delivery: screen share only
+Sessions 1–4 built this as a React app on Vercel. It worked, and the experience was bad. To watch something, the sharer had to: open the app tab, open a content tab, click share, pick the tab from a browser picker, open a floating picture-in-picture window, and manually resize the content window so the panel had somewhere to sit. Six manual steps, then a permanently sacrificed slice of screen. A browser cannot do better than that — the share picker is a hard security requirement, and a web page cannot resize a window it didn't open.
 
-One person shares a browser **tab**; the other watches that video+audio stream over WebRTC. This handles every source identically — YouTube, Netflix, a local file, anything on screen.
+An extension can. It injects its UI **into the page you're already watching**, docks a sidebar, and squeezes the page into the remaining width — the way Teleparty does. No second tab, no floating window, no picker, no resizing.
 
-**Why not per-service playback sync:** syncing two independent players (e.g. via the YouTube IFrame API) gives better quality and two-way control, but only for YouTube, and it means building and maintaining a second, separate system. Screen share is one system that covers everything. Quality is slightly lower and only the sharer controls playback — accepted tradeoff for a much simpler build.
+**What this costs:** both of you install manually from a folder (or via the Chrome Web Store, $5 one-time). Manifest V3 has real constraints. No hot reload — you hit refresh on the extension card and reload the page. Some sites fight injected UI.
+
+**What it does not cost:** the WebRTC work. Signaling, the transceiver slot design, TURN config, and every lesson in the postmortems carry over unchanged. It's the same peer connection running in a different container.
+
+### Layout: docked sidebar, not floating
+
+Panel docks right at 20% width; the page is squeezed to 80%. Collapses to a thin strip. Nothing overlaps, nothing needs dragging.
+
+**The mechanism, because it is not obvious:** setting `width: 80%` on `<html>` is not enough. Sites like YouTube use `position: fixed` for headers and players, and fixed elements position against the viewport, not their parent — so they keep spanning the full screen and slide under the panel. Giving `<html>` a `transform` makes it the containing block for fixed descendants, so they get squeezed too. Then dispatch a `resize` event so the site re-lays-out. Both steps are required.
+
+This is the fragile part of the whole approach. It works on YouTube. Verify per-site before assuming.
+
+### Content delivery: tab capture
+
+`chrome.tabCapture.getMediaStreamId()` returns a stream id with **no picker** — the extension already has permission for the tab. Pass that id to `getUserMedia` with `chromeMediaSource: "tab"`.
 
 **Known constraints to design around:**
-- Must share a **tab**, not a window or full screen — tab audio capture only works reliably for tab shares in Chrome. Bake this into the UI as an instruction, not an afterthought.
-- The viewer **cannot** pause the sharer's video. WebRTC screen share is one-directional by design (security boundary). Solution: a "request pause" nudge — viewer clicks a button, sharer gets an on-screen notification, sharer pauses manually.
-- Desktop-to-desktop. iOS Safari doesn't support `getDisplayMedia()` for tab sharing, so phones can't be the sharer.
+- Capturing tab audio **mutes the tab for the sharer** unless the audio is explicitly played back locally. Handle this or the sharer watches in silence.
+- Capture is tied to a specific tab. Navigating away or closing it ends the capture.
+- The viewer **cannot** pause the sharer's video — same security boundary as before. Solution unchanged: a "request pause" nudge.
+- Chrome desktop only.
 
-### Tab flow and the floating camera window
+### Where the peer connection lives
 
-The app is not a single tab that "contains" the content. It's two tabs plus a floating window:
+The single most important structural decision in the extension version.
 
-- **App tab**: where the app lives — controls, chat, session logging.
-- **Content tab**: an ordinary tab, navigated freely to YouTube, Netflix, anywhere. Nothing about browsing here is restricted or routed through the app.
-- **Floating camera window**: both camera boxes (yours and your partner's) rendered side by side inside one small panel, built with the **Document Picture-in-Picture API**. This window floats on top of whichever tab is active, so the content tab can be browsed and shared without losing sight of each other.
+- **Not the service worker** — no DOM, no media elements, and MV3 workers sleep.
+- **Not a content script** — runs in the page's world, dies on navigation, and the page's CSS can reach it.
+- **The panel iframe**, pointing at a `chrome-extension://` page. Extension origin, so camera permission is granted once and works on every site. It renders video directly, which matters because **a `MediaStream` cannot be passed between documents** — whichever document holds the connection must be the one showing the picture.
 
-To share: click share in the app (or in the PiP window itself), the browser's native tab picker opens, select the content tab. From then on that tab's video/audio streams to the partner while the PiP window stays visible on top for both of you.
+The service worker's only job is brokering: toggle the panel, hand over the tab-capture stream id (ids are strings and *can* cross contexts, unlike streams).
 
-**Positioning: draggable, default top-right.** Document Picture-in-Picture windows are draggable by the browser natively — this isn't something to build, it comes for free with the API. No custom drag logic needed. Default spawn position is top-right; the user can drag it anywhere afterward, and the browser remembers position across the session.
+**Consequence to accept:** a hard navigation in the host tab destroys the iframe and drops the call. Soft/SPA navigation (YouTube's normal browsing) does not. An offscreen document would survive both, but cannot render video into the sidebar, so it doesn't solve the problem it appears to solve.
 
-### Connectivity: STUN + TURN fallback from day one
+### Connectivity: STUN + TURN — unchanged
 
-- **Signaling** (peers exchanging connection info): Supabase Realtime channel. No custom WebSocket server needed.
-- **STUN** (discovering your public address): free public server, e.g. `stun:stun.l.google.com:19302`.
-- **TURN** (relay fallback): free tier, included from the start.
+- **Signaling:** Supabase Realtime channel. Unchanged from Session 2.
+- **STUN:** `stun:stun.l.google.com:19302`.
+- **TURN:** ExpressTURN free tier (1000GB/month, TCP+UDP on 3478, plus 80/443 for firewall traversal).
 
-**Why TURN from day one:** roughly 10–20% of connections can't establish a direct peer-to-peer path — usually symmetric NAT (router assigns a different external port per destination, so STUN can't discover a usable address) or a firewall blocking UDP. These are structural properties of the network, not transient glitches, so **reloading does not fix them**. Without TURN, those sessions simply never connect, with no useful error. TURN converts the problem from "accept an incoming connection" (which NATs fight) to "make an outbound connection" (which every network allows), so it essentially always works.
+**Why TURN from day one:** ~10–20% of connections can't establish a direct path — symmetric NAT, or a firewall blocking UDP. These are structural network properties; reloading does not fix them. TURN converts "accept an incoming connection" into "make an outbound connection," which every network allows.
 
-**Provider:** using **ExpressTURN** (free tier: 1000GB/month, long-term credentials, TCP+UDP on 3478 plus 80/443 for firewall traversal). Credentials live in `.env.local` as `VITE_TURN_SERVER` / `VITE_TURN_USERNAME` / `VITE_TURN_CREDENTIAL`. Alternatives if more headroom or control is wanted: **Open Relay Project** (no signup, public credentials) or **Metered.ca** (50GB/month free tier) — swapping providers is a config change, not a rearchitecture.
+**Secrets are baked into the bundle.** Vite inlines env vars at build time, so the Supabase anon key and TURN credentials are readable by anyone holding the extension folder. Acceptable for two people; not acceptable if this is ever published.
 
 ### Scope: cut line for MVP
 
-The test applied to each feature: *if this were missing, would we open Teleparty instead?*
+*If this were missing, would we open Teleparty instead?*
 
 | Feature | Verdict |
 |---|---|
-| Two camera boxes + hide toggle | **MVP** — the whole point of "feel together" |
-| Screen share | **MVP** — the "watch together" half |
-| STUN/TURN connectivity | **MVP** — nothing works without it |
-| Basic live text chat | **MVP** (no persistence yet) |
-| Emoji reaction overlay | V1 — delightful, not functional |
-| Chat persistence to cloud | V1 |
-| Session date/duration logging | V1 — cheap to build |
+| Camera tiles in the docked panel | **MVP** |
+| Tab capture + viewer playback | **MVP** |
+| STUN/TURN connectivity | **MVP** |
+| Basic live text chat | **MVP** (no persistence) |
+| Page squeeze that survives real sites | **MVP** — the whole reason for the rewrite |
+| Emoji reaction overlay | V1 |
+| Chat persistence | V1 |
+| Session logging | V1 |
 | Conversation summaries | V2 |
-| UI polish, reconnect handling | V2 |
+| Reconnect on navigation | V2 |
 
 ---
 
@@ -63,143 +81,124 @@ The test applied to each feature: *if this were missing, would we open Teleparty
 
 | Layer | Choice | Why |
 |---|---|---|
-| Frontend | React + Vite | Fast dev loop, huge amount of learning material |
-| Hosting | Vercel | Free tier, GitHub-connected deploys |
-| DB + Realtime + Auth | Supabase | Postgres for chat/session logs, Realtime for signaling *and* chat, simple auth — all free tier |
-| Video/screen share | Native WebRTC APIs | `RTCPeerConnection`, `getUserMedia`, `getDisplayMedia`. No library needed for 2 peers |
-| TURN | ExpressTURN | Free tier, 1000GB/mo, credentials via env vars |
-| Summaries (V2) | **Undecided** — hosted API vs local model via Ollama. See section 7. | Deliberately deferred; not needed until V2 |
+| Shell | Chrome extension, Manifest V3 | The only way to get docked UI without manual setup |
+| Panel UI | React + Vite, multi-entry build | Keeps existing component work; verify the build config early |
+| Signaling / DB | Supabase | Unchanged — Realtime for signaling and chat, Postgres for logs |
+| Media | Native WebRTC + `chrome.tabCapture` | Same peer connection, different capture source |
+| TURN | ExpressTURN | Unchanged |
+| Hosting | **None** | Extension loads from disk. Vercel is out of the stack |
+| Summaries (V2) | Undecided — see section 7 | Deferred |
 
-**Note on architecture:** for exactly two people, direct peer-to-peer is the *correct* design, not a lesser version of what Zoom does. Zoom's SFU (server in the middle) exists to scale to many participants; for a 2-person call it's overhead, not a quality gain. The gap versus Zoom/FaceTime is polish and infrastructure, not architecture.
+**Build note:** an extension needs specific output files (`manifest.json`, service worker, content script, panel HTML/JS) rather than one bundle. Plain Vite with multiple entry points works. `@crxjs/vite-plugin` automates it — check its current maintenance status before depending on it. Confirm the build config in Session 1E before writing feature code.
 
 ---
 
-## 3. Quality Tuning for Screen Share
+## 3. Quality Tuning for Tab Capture
 
-Browser defaults are conservative. These levers materially improve quality and should be applied when the screen-share feature is built:
+Same levers as before; the capture call differs.
 
-1. **Request high resolution/framerate explicitly** in `getDisplayMedia()` constraints — 1080p at 30fps (or 60). Biggest single lever.
-2. **Set `contentHint = "motion"`** on the video track — tells the encoder to favor smooth motion over static sharpness, correct for movie watching.
-3. **Raise the bitrate cap** via `RTCRtpSender.setParameters()` — 2.5–4 Mbps for 1080p30. Browsers default low to be safe on average connections.
-4. **Prefer VP9 or AV1** over default H.264 in SDP negotiation — better quality per bit, both supported in Chrome.
-5. **Chrome on both ends** — most mature WebRTC implementation, best hardware acceleration.
-6. **Test on the same wifi first** — establishes the quality ceiling before introducing internet-distance variables.
+1. Request 1080p/30fps explicitly in the `getUserMedia` constraints alongside `chromeMediaSource: "tab"`
+2. Set `contentHint = "motion"` on the video track
+3. Raise the bitrate cap via `RTCRtpSender.setParameters()` — 2.5–4 Mbps for 1080p30
+4. Prefer VP9 or AV1 in SDP negotiation
+5. Chrome both ends
+6. Same-wifi test first to establish the ceiling
 
-Realistic expectation: on decent home internet with these applied, screen share should look genuinely good. The gap versus FaceTime shows up in edge cases — spotty wifi, an older laptop struggling to encode, very asymmetric connection quality.
+Existing implementations of 2–4 in `screenShare.js` carry over. Only the capture step is rewritten.
 
 ---
 
 ## 4. Milestones
 
-### MVP — "does this even work"
-- [x] Vite + React app scaffolded, Supabase wired up, deployed to Vercel
-- [x] Signaling over Supabase Realtime channel
-- [x] Two-person WebRTC camera call, side-by-side boxes
-- [x] Camera on/off (device fully released) + mic mute per person, both signaled to the partner
-- [ ] Camera boxes rendered inside a Document Picture-in-Picture window (native drag, default top-right)
-- [x] STUN + TURN configured in `RTCPeerConnection`
-- [x] Screen share (tab), quality-tuned per section 3 — built as a 4-slot reservation (mic/camera/screen-audio/screen-video) so it needs zero renegotiation; either person can share, not just one direction (see CLAUDE.md Current status — device-verification still pending as of the build date)
-- [ ] Basic live text chat (in-memory, no persistence)
-- [ ] "Request pause" nudge button + on-screen notification for sharer
+Sessions 1–4 were built against the web-app architecture. Marked below by what survives.
 
-### V1 — "we'd use this daily"
-- [x] Either person can initiate screen share — delivered for free by the MVP's 4-slot design (Session 4): no renegotiation ever happens, so there was nothing to "handle"
-- [ ] Chat persisted to Supabase Postgres, restored on refresh
-- [ ] Emoji reaction dropdown → full-screen overlay animation, broadcast to both
-- [ ] Session logging: start/end timestamps, duration, stored in DB
-- [ ] Simple session history view
+### Carried over from the web app — do not rebuild
+- [x] Signaling over Supabase Realtime (`signaling.js`) — **unchanged**
+- [x] Peer connection, offer/answer, presence, offerer election — **unchanged**
+- [x] 4-slot transceiver design (`mediaSlots.js`) — no renegotiation on share — **unchanged**
+- [x] Camera/mic control logic, `media-state` messages, generation counters — **logic unchanged, UI rehomed**
+- [x] Quality tuning + codec preference (`screenShare.js`) — **capture step rewritten, rest unchanged**
+- [x] Loopback test (`loopbackTest.js`) — **still the first thing to run when anything looks wrong**
+- [x] STUN + TURN config, ExpressTURN credentials
 
-### V2 — polish + smart features
-- [ ] Conversation summary generated at session end — **model choice undecided, see section 7**
-- [ ] Reconnect handling (network drop doesn't kill the session)
+### MVP — extension shell
+- [ ] Session 1E: extension scaffold — manifest, service worker, content script, panel build pipeline
+- [ ] Session 2E: docked sidebar that squeezes the page, verified on YouTube **and** the other sites you actually use
+- [ ] Session 3E: existing peer connection running inside the panel iframe; camera tiles live again
+- [ ] Session 4E: `chrome.tabCapture` replacing `getDisplayMedia`, including local audio playback so the sharer isn't muted
+- [ ] Session 5E: chat in the panel (live only)
+- [ ] Request-pause nudge
+
+### V1
+- [ ] Chat persisted to Postgres, restored on reopen
+- [ ] Emoji reactions — overlay on the *page*, which the extension can now do properly
+- [ ] Session logging: start/end, duration
+- [ ] Session history view
+
+### V2
+- [ ] Conversation summaries — model choice open, section 7
+- [ ] Survive hard navigation (reconnect, or move state to an offscreen document)
 - [ ] Auth so it's just the two of you
-- [ ] UI styling pass
+- [ ] Styling pass
 
-### Later / nice-to-have
-- [ ] Mobile-friendly layout (viewer only — sharer must stay desktop)
-- [ ] Reaction stats ("most used emoji this month")
-- [ ] Timestamp bookmarks for highlight moments
-- [ ] Optional: add YouTube IFrame sync as a *second* content mode for better YouTube quality and two-way playback control
-- [ ] Optional: replace Supabase Realtime signaling with a self-hosted Node + WebSocket server (learning exercise — the signaling module is deliberately abstracted to make this a one-file swap)
+### Later
+- [ ] Publish to Chrome Web Store so installs aren't manual
+- [ ] Per-site layout fixes as they come up
+- [ ] Optional: self-hosted Node signaling server (learning exercise)
 
-### Explicitly out of scope
-- Scraping or streaming directly from piracy sites (screen share covers the use case without this)
+### Out of scope
+- Scraping or streaming from piracy sites
 - Group calls beyond 2 people
+- Firefox or Safari
 - Monetization, multi-tenancy, public signups
 
 ---
 
-## 5. Claude Code Session Plan
+## 5. Session Plan
 
-Break the work into focused sessions rather than handing over the whole spec at once. This keeps each session's context tight and lets you actually read and understand what gets built — especially important for the WebRTC pieces, which are the genuinely new concepts here.
+**Session 1E — Extension scaffold**
+Manifest V3, service worker, content script, panel page. Get the Vite multi-entry build producing a loadable folder. Verify the load/reload loop before any features.
 
-**Session 1 — Scaffold and deploy pipeline**
-Vite + React app, Supabase client initialized with env vars, deployed to Vercel showing "hello world." Get deploys working first so every later step is instantly testable in the real environment.
+**Session 2E — Docked sidebar and page squeeze**
+The `<html>` transform trick, the resize dispatch, collapse/expand. Test on YouTube first, then every site you'd actually use. *This session is the whole bet — if the squeeze can't be made to work on your sites, the architecture is wrong and it's better to know now.*
 
-**Session 2 — Signaling + first peer connection**
-Supabase Realtime channel for offer/answer/ICE candidate exchange. `RTCPeerConnection` configured with STUN + TURN. Goal: two browser tabs see and hear each other via camera. *Read this code closely — it's the conceptual core of the project.*
+**Session 3E — Rehome the peer connection**
+Move existing WebRTC code into the panel iframe. Camera permission at extension origin. Get the two-device camera call working again. Run the loopback test first.
 
-**Session 3 — Camera box UI**
-Side-by-side layout, hide/show toggle per box, basic responsive behavior.
+**Session 4E — Tab capture**
+Replace `getDisplayMedia` with `chrome.tabCapture.getMediaStreamId()`. Keep the 4-slot design — capture source changed, negotiation did not. Handle the muted-tab problem.
 
-**Session 4 — Screen share**
-`getDisplayMedia()`, adding the track to the existing peer connection, viewer-side `<video>` element. Apply all quality tuning from section 3. Include the tab-not-window instruction in the UI.
+**Session 5E — Chat**
+Live over Supabase Realtime, then persistence.
 
-**Session 5 — Chat**
-Supabase Realtime for live messages first; Postgres persistence second.
-
-**Session 6 — Request-pause nudge**
-Button on viewer side, message over the data channel or Realtime, visible notification on sharer side.
-
-**Session 7 — Emoji reactions**
-Dropdown, broadcast over existing channel, full-screen overlay animation on both ends.
-
-**Session 8 — Session logging**
-Timestamps on connect/disconnect, duration calculation, DB table, simple history view.
-
-**Session 9 — Summaries**
-Generate a summary from the stored chat log at session end, saved alongside the session record. **Decide the model approach first — see section 7.**
+Then: pause nudge, reactions, session logging, summaries — as originally planned.
 
 ---
 
 ## 6. Things to Watch For
 
-- **Audio feedback loops.** Mic + tab audio + speakers in one session can echo badly. Plan for headphones, and/or handle echo cancellation settings explicitly when building screen share.
-- **Renegotiation.** Adding a screen-share track to a live peer connection triggers ICE renegotiation. Expect this to be fiddly — it's the most likely source of "it worked, then I hit share and everything broke."
-- **Document PiP API is newer/Chromium-specific.** Confirm current browser support before relying on it, and have a fallback in mind (camera boxes just stay in the app tab) if it's unavailable. Check support at build time — browser API support shifts.
-- **Testing TURN specifically.** Since TURN only activates when direct connection fails, it can sit silently broken. Force a TURN-only connection at least once (`iceTransportPolicy: "relay"`) to confirm it actually works before relying on it.
-- **Supabase free tier limits.** Generous, but Realtime has connection/message caps. Fine for two people; worth knowing they exist.
+**New to the extension**
+- **Three consoles, not one.** Service worker errors appear on the `chrome://extensions` card. Content script errors appear in the page's DevTools. Panel iframe errors need the iframe context selected in the DevTools dropdown. Looking in the wrong one wastes hours.
+- **Reload is two steps.** Refresh the extension card, *then* reload the page. Manifest changes always need the card refresh.
+- **`position: fixed` breaks the squeeze** without the `<html>` transform. See section 1.
+- **Tab capture mutes the tab** for the sharer unless audio is played back locally.
+- **MediaStreams can't cross documents.** Stream *ids* can. This constrains where the connection lives.
+- **Hard navigation kills the panel iframe** and drops the call. Expected in MVP.
+- **Content scripts don't retroactively inject.** Pages open before install have no content script; the service worker must inject on demand via `chrome.scripting.executeScript`.
+- **Secrets are readable in the bundle.** Fine for two people, not for publishing.
+
+**Carried over — still true**
+- **Audio feedback loops.** Mic + tab audio + speakers echo. Handle echo cancellation; assume headphones.
+- **TURN sits silently broken.** Force `iceTransportPolicy: "relay"` on both devices to confirm.
+- **Supabase Realtime free-tier caps.** Fine for two users.
+- **Read `SESSION_2_POSTMORTEM.md` and `SESSION_3_POSTMORTEM.md`** before debugging signaling or transceivers. Everything in them still applies — the peer connection didn't change, only its container.
 
 ---
 
 ## 7. Open Question: Summarization Model (V2)
 
-Not decided. Deferred until V2 is actually being built — by then the local model landscape will have moved, and it'll be clearer whether summaries are a feature worth having at all.
+Unchanged from the web-app version, with one difference: **there is no Vercel serverless function anymore**, which removes the main argument for a hosted API. An extension can call `localhost:11434` directly, so a local model via Ollama is now the more natural fit.
 
-### Option A: Local model via Ollama
+Still deferred. The remaining question is whether "summaries only generate when my machine is running Ollama" is acceptable. If yes, local wins on privacy — these are private conversations between two partners, and with a local model the text never leaves the machine. If summaries must exist for every session regardless of device state, hosted wins.
 
-**For:**
-- **Privacy.** Chat logs are private conversations between two partners. With a local model that text never leaves the machine — no third party, no retention question. This is the strongest argument, and it's specific to this app.
-- Free, unlimited, no API key management.
-
-**Against:**
-- **Architectural constraint.** The app is deployed on Vercel and reachable from anywhere; Ollama runs on one specific machine. A Vercel serverless function cannot reach a local Ollama instance. The workaround is calling `localhost:11434` from the browser, which works — but only for whoever has Ollama installed and running, and only while it's running. No summary if that machine is off.
-- Requires ~8GB free RAM for an 8B-class model. Fine on a modern laptop, painful on an older one.
-- Both people would need it set up, or summaries only ever generate on one side.
-
-**Model note:** don't default to Llama 3.1 — it dates from mid-2024. Check what's current when actually building. Summarizing a chat log is an easy task; a small modern model is plenty.
-
-### Option B: Hosted API
-
-**For:**
-- Reachable from a serverless function regardless of whose device triggered it — no "is my laptop on" dependency.
-- No local hardware requirement.
-- Better output quality, though summarization is easy enough that this matters less than usual.
-
-**Against:**
-- Chat log text goes to a third party.
-- Costs money (small at this volume, but nonzero) and needs key management.
-
-### How to decide
-
-The real question is whether "summaries only generate when my machine is running" is acceptable. If yes, local wins on privacy. If summaries should reliably exist for every session regardless of device state, hosted wins.
+Don't default to a model from memory — check what's current when you get here.
