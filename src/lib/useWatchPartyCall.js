@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { iceServers } from "./iceServers";
 import { joinSignalingChannel } from "./signaling";
+import { SLOT_ORDER, resolveSlots } from "./mediaSlots";
+import { captureScreen, applyScreenQuality, preferVideoCodecs } from "./screenShare";
 
 // If we believe we're the answerer but no offer shows up in this long, assume the
 // offerer election picked wrong (a stale presence entry is the usual cause) and
@@ -8,9 +10,9 @@ import { joinSignalingChannel } from "./signaling";
 const OFFER_TIMEOUT_MS = 3000;
 
 // The whole call lives here: signaling, the peer connection, and the camera/mic
-// controls. It's a hook rather than code inside App because the toggle buttons
-// need to reach the peer connection's senders and the local stream, and those
-// used to be closure variables locked inside a useEffect.
+// and screen-share controls. It's a hook rather than code inside App because the
+// toggle buttons need to reach the peer connection's senders and the local
+// streams, and those used to be closure variables locked inside a useEffect.
 //
 // --- the idea the media controls rest on ---------------------------------
 // A *transceiver* is a durable slot in the connection; a *track* is just what's
@@ -18,13 +20,20 @@ const OFFER_TIMEOUT_MS = 3000;
 // through the slot without renegotiating, as long as the kind matches, and
 // `replaceTrack(null)` stops sending with the slot left intact.
 //
-// That is what lets us physically stop the camera -- light off -- and re-acquire
-// it later without ever touching offer/answer. The alternative, removeTrack /
-// addTrack, fires `negotiationneeded` and needs a fresh offer, which is exactly
-// the path CLAUDE.md warns about while glare is still unhandled.
+// Session 3 used this for the camera: one slot, reserved at connection time,
+// filled or emptied without ever touching offer/answer. Screen share (Session 4)
+// is the same idea applied one step earlier: FOUR slots are reserved up front --
+// mic, camera, screen audio, screen video -- so starting or stopping a share is
+// also just a replaceTrack. See mediaSlots.js for the slot table and why the
+// answerer must resolve them by index instead of pre-creating its own.
 export function useWatchPartyCall() {
   const localVideoRef = useRef(null);
   const remoteVideoRef = useRef(null);
+  // The shared-content surface. Local when WE are sharing, remote when the
+  // partner is -- see wireRemoteStreams() and startShare() for how each gets
+  // its srcObject.
+  const localScreenVideoRef = useRef(null);
+  const remoteScreenVideoRef = useRef(null);
 
   const [status, setStatus] = useState("waiting for partner...");
   const [cameraOn, setCameraOn] = useState(true);
@@ -36,19 +45,42 @@ export function useWatchPartyCall() {
   // instant you click, but the frames don't arrive for several hundred ms.
   const [cameraStarting, setCameraStarting] = useState(false);
 
-  // Same two values as state, mirrored into refs. The effect below runs once and
+  const [sharing, setSharing] = useState(false);
+  const [shareStarting, setShareStarting] = useState(false);
+  const [partnerSharing, setPartnerSharing] = useState(false);
+  // Populated when captureScreen() detects the user picked a window/screen
+  // instead of a tab, or shared without tab audio. Shown in the UI rather than
+  // thrown, because the share is still real and still worth displaying.
+  const [shareWarnings, setShareWarnings] = useState([]);
+
+  // Static for the life of the app -- iOS Safari has no getDisplayMedia at all,
+  // which is exactly locked decision #5 (phones are viewer-only). Computed once
+  // rather than as state since it can't change while the page is open.
+  const canShare = typeof navigator !== "undefined" && typeof navigator.mediaDevices?.getDisplayMedia === "function";
+
+  // Same values as state, mirrored into refs. The effect below runs once and
   // its callbacks would otherwise close over the values from the first render
   // forever; async code reads the refs to get the *current* intent.
   const cameraOnRef = useRef(true);
   const micOnRef = useRef(true);
+  const sharingRef = useRef(false);
 
   // Everything that belongs to one peering session. Refs, not state: none of it
   // is render data, and rebuilding a peer connection must not re-render the UI.
   const pcRef = useRef(null);
   const localStreamRef = useRef(null);
-  const remoteStreamRef = useRef(null);
-  const videoSenderRef = useRef(null);
-  const audioSenderRef = useRef(null);
+  // Camera+mic from the partner -> the partner's CameraBox tile.
+  const remoteCameraStreamRef = useRef(null);
+  // Screen audio+video from the partner -> the Stage.
+  const remoteScreenStreamRef = useRef(null);
+  // Our own screen capture, while sharing -> our half of the Stage.
+  const localScreenStreamRef = useRef(null);
+  // The four reserved transceivers for the current peering session, keyed by
+  // role (see mediaSlots.js). Built once per session -- by createPeerConnection
+  // for the offerer, by attachLocalMediaToAnswer for the answerer -- and used
+  // by every control (toggleCamera, toggleMic, startShare, stopShare) to reach
+  // the right sender without caring which role built it.
+  const slotsRef = useRef({});
   const signalingRef = useRef(null);
   // Bumped on every camera toggle. Opening a camera is slow (~300ms) and
   // toggleCamera is async, so clicking faster than that leaves more than one
@@ -57,18 +89,27 @@ export function useWatchPartyCall() {
   // stays open behind them -- the camera light stays on with the UI showing
   // "camera off", which is exactly the failure that looks like a lie.
   const cameraOpRef = useRef(0);
+  // Same idea for screen capture: getDisplayMedia is async and its own picker
+  // adds an unpredictable delay, so a double-click on Share can leave two tab
+  // captures live -- the abandoned one still shows Chrome's "sharing" indicator
+  // for a tab nobody is using.
+  const shareOpRef = useRef(0);
   // Bumped every time a peering session is torn down, so async work started by
   // the old session can notice it has been outlived. See onPeerOnline.
   const peeringTokenRef = useRef(0);
 
   // Tell the partner what our devices are doing. They cannot work this out from
   // the stream itself: a muted mic sends silence and a stopped camera sends
-  // nothing, and neither is distinguishable from a network stall. So we say it.
+  // nothing -- and, as of this session, an idle screen-video receiver reports
+  // `track.muted === false` even when nobody has shared anything yet, so
+  // whether a share is live is *exactly* as untellable from the stream as
+  // camera/mic state. So all three are said, not guessed.
   const sendMediaState = useCallback(() => {
     signalingRef.current?.sendSignal({
       type: "media-state",
       camera: cameraOnRef.current,
       mic: micOnRef.current,
+      sharing: sharingRef.current,
     });
   }, []);
 
@@ -93,6 +134,7 @@ export function useWatchPartyCall() {
   // placeholder on the promise therefore still flashes black. This waits for a
   // frame to actually reach the screen. The timeout is a safety net: a camera
   // that never produces a frame must not wedge the tile in "starting..." forever.
+  // Generic over camera vs. screen-share elements -- both need exactly this.
   const waitForFirstFrame = useCallback((el, timeoutMs = 2000) => {
     return new Promise((resolve) => {
       if (!el) return resolve();
@@ -140,7 +182,7 @@ export function useWatchPartyCall() {
     const op = ++cameraOpRef.current;
 
     const stream = localStreamRef.current;
-    const sender = videoSenderRef.current;
+    const sender = slotsRef.current.camera?.sender;
 
     if (!next) {
       // Off. Order matters here, and it used to be the other way round.
@@ -232,6 +274,104 @@ export function useWatchPartyCall() {
     sendMediaState();
   }, [sendMediaState, waitForFirstFrame]);
 
+  // Begin sharing a tab. Fills the screenAudio/screenVideo slots that were
+  // reserved (empty) when the peering session started -- see mediaSlots.js.
+  // Because the slots already exist, this is a replaceTrack, exactly like
+  // turning the camera on: no offer, no answer, no renegotiation, no glare.
+  const startShare = useCallback(async () => {
+    const slots = slotsRef.current;
+    if (!slots.screenVideo || !slots.screenAudio) {
+      // No peering session yet (or it hasn't finished negotiating), so the
+      // slots don't exist -- there's nowhere to send this to.
+      console.warn("no partner yet, ignoring share request");
+      return;
+    }
+    if (sharingRef.current) return; // already sharing, nothing to do
+
+    const op = ++shareOpRef.current;
+    setShareWarnings([]);
+
+    let capture;
+    try {
+      capture = await captureScreen();
+    } catch (err) {
+      // By far the most common case is the user closing the picker without
+      // choosing anything (NotAllowedError). That's not a connection problem,
+      // just a share that didn't start -- no need to touch `status` over it.
+      console.warn("screen capture cancelled or failed:", err.name, err.message);
+      return;
+    }
+    const { stream, warnings } = capture;
+
+    if (op !== shareOpRef.current) {
+      // A second click landed before the picker closed on this one. Release
+      // this capture immediately -- an abandoned tab-capture is exactly the
+      // camera-light bug from Session 3, just with Chrome's sharing indicator
+      // standing in for the camera light.
+      stream.getTracks().forEach((track) => track.stop());
+      return;
+    }
+
+    sharingRef.current = true;
+    setSharing(true);
+    setShareStarting(true);
+    setShareWarnings(warnings);
+
+    const videoTrack = stream.getVideoTracks()[0];
+    const audioTrack = stream.getAudioTracks()[0] ?? null;
+
+    // Chrome's own "Stop sharing" bar (or the OS-level screen-share menu) can
+    // end this track directly, bypassing our Stop button entirely. Without
+    // this listener the UI keeps claiming a share the browser already tore
+    // down. Guarded by `op` so a track from an OLD share ending late can't
+    // reach in and stop a NEW one that has since started.
+    videoTrack.onended = () => {
+      if (op === shareOpRef.current) stopShare();
+    };
+
+    await slots.screenVideo.sender.replaceTrack(videoTrack);
+    if (audioTrack) await slots.screenAudio.sender.replaceTrack(audioTrack);
+    await applyScreenQuality(slots.screenVideo.sender, videoTrack);
+
+    localScreenStreamRef.current = stream;
+    if (localScreenVideoRef.current) localScreenVideoRef.current.srcObject = stream;
+    await waitForFirstFrame(localScreenVideoRef.current);
+    if (op === shareOpRef.current) setShareStarting(false);
+
+    sendMediaState();
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- stopShare is defined below and stable via useCallback
+  }, [sendMediaState, waitForFirstFrame]);
+
+  // End a share, ours or one the tie-break below decided must yield. Mirrors
+  // toggleCamera's off-branch: release the actual capture first (that's what
+  // turns off Chrome's sharing indicator), tidy the senders second, so a
+  // failure in the tidy-up can never leave the device held open.
+  const stopShare = useCallback(async () => {
+    if (!sharingRef.current) return;
+    shareOpRef.current += 1; // invalidates any in-flight startShare or onended
+    sharingRef.current = false;
+    setSharing(false);
+    setShareStarting(false);
+    setShareWarnings([]);
+
+    const slots = slotsRef.current;
+    const stream = localScreenStreamRef.current;
+    stream?.getTracks().forEach((track) => track.stop());
+    localScreenStreamRef.current = null;
+    if (localScreenVideoRef.current) localScreenVideoRef.current.srcObject = null;
+
+    try {
+      await slots.screenVideo?.sender.replaceTrack(null);
+      await slots.screenAudio?.sender.replaceTrack(null);
+    } catch (err) {
+      // The capture is already released by this point, so this is cosmetic --
+      // same reasoning as the equivalent catch in toggleCamera.
+      console.warn("replaceTrack(null) failed after stopping share:", err);
+    }
+
+    sendMediaState();
+  }, [sendMediaState]);
+
   useEffect(() => {
     let cancelled = false;
 
@@ -266,13 +406,51 @@ export function useWatchPartyCall() {
         // `false` here is how pre-arming works: turn the camera off before a
         // partner arrives and it simply never opens when they do.
         video: cameraOnRef.current,
-        audio: true,
+        // Explicit, not `audio: true` -- this is a MICROPHONE, so echo
+        // cancellation matters: without it, the partner's voice coming out of
+        // your speakers gets picked back up and sent right back to them.
+        // screenShare.js turns these same three settings OFF for the opposite
+        // reason -- that's tab content, not a voice call, and the processing
+        // would mangle music or dialogue. EC is tuned for voices and can't
+        // fully cancel loud content playing over speakers either way --
+        // headphones are the actual fix (CLAUDE.md, "Audio feedback loops").
+        audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
       });
       // The mic track always exists -- muting it is `enabled = false`, which
       // needs a track to be there in the first place.
       const audioTrack = stream.getAudioTracks()[0];
       if (audioTrack) audioTrack.enabled = micOnRef.current;
       return stream;
+    }
+
+    // Builds (or refreshes) the two remote streams -- camera+mic for the
+    // partner's tile, screen audio+video for the Stage -- from whatever the
+    // connection's transceivers currently hold. Called from ontrack, which can
+    // fire before attachLocalMediaToAnswer() has run: on the answerer, a
+    // receiver's track exists the instant setRemoteDescription creates the
+    // transceiver, not after we've attached our own media. So this re-resolves
+    // slot roles fresh each call via resolveSlots() rather than trusting
+    // slotsRef to already be populated.
+    function wireRemoteStreams() {
+      const pc = pcRef.current;
+      if (!pc) return;
+      const slots = resolveSlots(pc.getTransceivers());
+
+      if (!remoteCameraStreamRef.current) remoteCameraStreamRef.current = new MediaStream();
+      if (!remoteScreenStreamRef.current) remoteScreenStreamRef.current = new MediaStream();
+      const cameraStream = remoteCameraStreamRef.current;
+      const screenStream = remoteScreenStreamRef.current;
+
+      // MediaStream.addTrack is a no-op if the track is already present, so
+      // this is safe to call every time a new track arrives rather than only
+      // once.
+      if (slots.mic) cameraStream.addTrack(slots.mic.receiver.track);
+      if (slots.camera) cameraStream.addTrack(slots.camera.receiver.track);
+      if (slots.screenAudio) screenStream.addTrack(slots.screenAudio.receiver.track);
+      if (slots.screenVideo) screenStream.addTrack(slots.screenVideo.receiver.track);
+
+      if (remoteVideoRef.current) remoteVideoRef.current.srcObject = cameraStream;
+      if (remoteScreenVideoRef.current) remoteScreenVideoRef.current.srcObject = screenStream;
     }
 
     // `isOfferer` decides how our own media gets attached, and the two roles are
@@ -283,16 +461,8 @@ export function useWatchPartyCall() {
         ...(forceRelay ? { iceTransportPolicy: "relay" } : {}),
       });
 
-      connection.ontrack = (event) => {
-        // Fires once per remote track (audio, then video). We collect them into
-        // a stream we own rather than trusting `event.streams[0]`: a transceiver
-        // reserved before its track exists has no stream to advertise, so
-        // `event.streams` can legitimately be empty.
-        if (!remoteStreamRef.current) remoteStreamRef.current = new MediaStream();
-        remoteStreamRef.current.addTrack(event.track);
-        if (remoteVideoRef.current) {
-          remoteVideoRef.current.srcObject = remoteStreamRef.current;
-        }
+      connection.ontrack = () => {
+        wireRemoteStreams();
         setStatus("connected");
       };
 
@@ -316,10 +486,11 @@ export function useWatchPartyCall() {
       connection.onconnectionstatechange = () => {
         console.log("connectionState:", connection.connectionState);
         if (connection.connectionState === "connected") {
-          // Send our camera/mic state here rather than when the peering session
-          // starts. signaling.js drops any message whose `session` the receiver
-          // hasn't computed yet, and at session start that's a genuine race --
-          // by the time the connection is up, both sides provably agree on it.
+          // Send our camera/mic/sharing state here rather than when the
+          // peering session starts. signaling.js drops any message whose
+          // `session` the receiver hasn't computed yet, and at session start
+          // that's a genuine race -- by the time the connection is up, both
+          // sides provably agree on it.
           sendMediaState();
         }
         if (
@@ -340,39 +511,55 @@ export function useWatchPartyCall() {
 
       // --- attaching our media: the offerer and the answerer differ ----------
       //
-      // The offerer defines the m-lines, so it reserves one slot per kind here,
-      // whether or not there's a track to put in it yet. That's what makes
-      // turning the camera on later a plain replaceTrack into an existing slot
-      // instead of a renegotiation.
+      // The offerer defines the m-lines, so it reserves one slot per role here
+      // -- FOUR now, not two -- whether or not there's a track to put in it
+      // yet. That's what makes turning the camera on, or starting a screen
+      // share, later a plain replaceTrack into an existing slot instead of a
+      // renegotiation.
       //
       // The ANSWERER must not do this. setRemoteDescription(offer) builds its
       // own transceivers from the offer's m-lines, and it will NOT adopt ones
       // made by addTransceiver -- only addTrack-created transceivers are
-      // eligible for that. Pre-creating them here leaves the answerer holding
-      // four: two orphans with `mid: null` that never send, plus two recvonly
-      // ones from the SDP. The answer still has the right two m-lines and
-      // nothing throws, so the failure is silent: media flows offerer ->
-      // answerer only, and the offerer sits looking at a black box. That was
-      // the one-way-video bug. The answerer fills in its tracks after
-      // setRemoteDescription instead -- see attachLocalMediaToAnswer().
+      // eligible for that. Pre-creating them here would leave the answerer
+      // holding eight: four orphans with `mid: null` that never send, plus
+      // four recvonly ones from the SDP. The answerer fills in its tracks
+      // after setRemoteDescription instead -- see attachLocalMediaToAnswer().
       if (isOfferer) {
         const stream = localStreamRef.current;
-        const audioTrack = stream?.getAudioTracks()[0] ?? null;
-        const videoTrack = stream?.getVideoTracks()[0] ?? null;
-        const audioTransceiver = connection.addTransceiver(audioTrack ?? "audio", {
-          direction: "sendrecv",
-          streams: stream ? [stream] : [],
+        const tracksByRole = {
+          mic: stream?.getAudioTracks()[0] ?? null,
+          camera: stream?.getVideoTracks()[0] ?? null,
+          // Nobody shares at connection time -- these two start empty, exactly
+          // like the camera slot does when connecting with the camera off.
+          screenAudio: null,
+          screenVideo: null,
+        };
+        const slots = {};
+        SLOT_ORDER.forEach(({ role, kind }) => {
+          const isScreenSlot = role === "screenAudio" || role === "screenVideo";
+          const track = tracksByRole[role];
+          const options = {
+            direction: "sendrecv",
+            // The camera/mic slots share the mic+camera MediaStream so the
+            // partner's browser groups them as one source; the screen slots
+            // have no stream to advertise yet -- one gets created in
+            // startShare() once there's an actual capture to associate.
+            streams: isScreenSlot ? [] : stream ? [stream] : [],
+          };
+          if (role === "screenVideo") {
+            // A baseline cap set at slot-creation time; startShare() sets the
+            // authoritative one via setParameters() once real encoding starts
+            // (see applyScreenQuality), regardless of which side ends up
+            // sharing through this slot.
+            options.sendEncodings = [{ maxBitrate: 3_000_000 }];
+          }
+          slots[role] = connection.addTransceiver(track ?? kind, options);
         });
-        const videoTransceiver = connection.addTransceiver(videoTrack ?? "video", {
-          direction: "sendrecv",
-          streams: stream ? [stream] : [],
-        });
-        // Capture the senders now. Looking them up later with
-        // getSenders().find(s => s.track?.kind === "video") breaks the moment we
-        // replaceTrack(null): the sender is still there, but its track is null,
-        // so the search quietly finds nothing.
-        audioSenderRef.current = audioTransceiver.sender;
-        videoSenderRef.current = videoTransceiver.sender;
+        // Must happen before createOffer() -- setCodecPreferences only affects
+        // SDP generated after it's called, and the offer is what fixes the
+        // codec list for this connection's whole life.
+        preferVideoCodecs(slots.screenVideo, ["VP9", "AV1"]);
+        slotsRef.current = slots;
       }
 
       return connection;
@@ -389,38 +576,36 @@ export function useWatchPartyCall() {
         transceivers.map((t) => `${t.mid}:${t.receiver.track.kind}:${t.direction}`).join(" ")
       );
 
-      for (const transceiver of transceivers) {
-        // A transceiver from a rejected or stopped m-line must be left alone:
-        // both `replaceTrack` and setting `.direction` on one throw
-        // InvalidStateError. Throwing here is not a cosmetic failure -- it
-        // aborts before createAnswer(), so no answer is ever sent and the
-        // offerer sits at `have-local-offer` forever with no clue why. An offer
-        // can legitimately carry sections we don't recognise, so skip anything
-        // that isn't a live audio or video slot rather than assuming.
-        if (transceiver.direction === "stopped" || transceiver.currentDirection === "stopped") {
-          console.warn("skipping stopped transceiver, mid", transceiver.mid);
-          continue;
-        }
-        const kind = transceiver.receiver.track.kind;
-        if (kind !== "audio" && kind !== "video") {
-          console.warn("skipping transceiver of unexpected kind:", kind);
-          continue;
-        }
+      // resolveSlots already applies the stopped/kind-mismatch skips that used
+      // to be written out by hand here -- see mediaSlots.js. Whatever it can't
+      // resolve simply doesn't appear below, which is exactly the old
+      // `continue` behaviour.
+      const slots = resolveSlots(transceivers);
+      slotsRef.current = slots;
 
-        const track = kind === "audio"
-          ? stream?.getAudioTracks()[0]
-          : stream?.getVideoTracks()[0];
-        // A missing track is fine and expected -- it's the camera being off.
-        // The slot still exists, which is the whole point.
+      const tracksByRole = {
+        mic: stream?.getAudioTracks()[0] ?? null,
+        camera: stream?.getVideoTracks()[0] ?? null,
+        // Nothing to attach yet -- same as the offerer at connection time.
+        // These slots exist so a LATER share is a replaceTrack, not a
+        // renegotiation, no matter which side ends up sharing.
+        screenAudio: null,
+        screenVideo: null,
+      };
+
+      for (const [role, transceiver] of Object.entries(slots)) {
+        const track = tracksByRole[role];
+        // A missing track is fine and expected -- it's the camera being off,
+        // or nobody sharing yet. The slot still exists, which is the point.
         if (track) await transceiver.sender.replaceTrack(track);
         // Without this the transceiver stays `recvonly` (it was built from an
         // offer at a moment when we had nothing attached) and we never send.
         transceiver.direction = "sendrecv";
-        // First slot of each kind wins: if an offer somehow carries two video
-        // sections, the controls must drive the one we actually attached to.
-        if (kind === "audio") audioSenderRef.current ??= transceiver.sender;
-        else videoSenderRef.current ??= transceiver.sender;
       }
+
+      // Same reasoning as the offerer's call above: must happen before
+      // createAnswer(), which runs immediately after this function returns.
+      if (slots.screenVideo) preferVideoCodecs(slots.screenVideo, ["VP9", "AV1"]);
     }
 
     // Throw away the current peering session, devices included.
@@ -432,8 +617,7 @@ export function useWatchPartyCall() {
 
       pcRef.current?.close();
       pcRef.current = null;
-      videoSenderRef.current = null;
-      audioSenderRef.current = null;
+      slotsRef.current = {};
       offerSent = false;
       nudgeSent = false;
       remoteDescriptionSet = false;
@@ -448,14 +632,33 @@ export function useWatchPartyCall() {
       localStreamRef.current = null;
       if (localVideoRef.current) localVideoRef.current.srcObject = null;
 
+      // The screen capture is call-scoped too, for the same reason: no partner
+      // means nothing to send a share to. Known trade-off -- a partner reload
+      // is a leave-then-join, so it also ends any share in progress and you
+      // have to re-pick the tab, same as the camera's blink-off-and-on. Not
+      // fixed here: keeping the capture alive across peering sessions means
+      // state outliving its session, which is the exact class of bug that ate
+      // Session 2.
+      shareOpRef.current += 1;
+      sharingRef.current = false;
+      setSharing(false);
+      setShareStarting(false);
+      setShareWarnings([]);
+      localScreenStreamRef.current?.getTracks().forEach((track) => track.stop());
+      localScreenStreamRef.current = null;
+      if (localScreenVideoRef.current) localScreenVideoRef.current.srcObject = null;
+
       // Without this the partner's frozen last frame stays on screen, looking
       // exactly like a live connection.
-      remoteStreamRef.current = null;
+      remoteCameraStreamRef.current = null;
       if (remoteVideoRef.current) remoteVideoRef.current.srcObject = null;
+      remoteScreenStreamRef.current = null;
+      if (remoteScreenVideoRef.current) remoteScreenVideoRef.current.srcObject = null;
 
       // We know nothing about the next partner's devices until they tell us.
       setPartnerCameraOn(true);
       setPartnerMicOn(true);
+      setPartnerSharing(false);
     }
 
     async function applyRemoteDescription(description) {
@@ -466,9 +669,10 @@ export function useWatchPartyCall() {
       }
     }
 
-    // How many m= sections a description carries. Two (audio + video) is what
-    // this app should ever produce; anything else means something added a
-    // section we didn't ask for, and that's worth seeing in the log.
+    // How many m= sections a description carries. FOUR (mic, camera,
+    // screenAudio, screenVideo) is what this app should produce from Session 4
+    // onward; anything else means something added a section we didn't ask for,
+    // and that's worth seeing in the log.
     function sectionCount(description) {
       return (description?.sdp?.match(/^m=/gm) || []).length;
     }
@@ -570,9 +774,22 @@ export function useWatchPartyCall() {
             // the partner's devices, not about negotiation, so it's meaningful
             // whether or not a connection exists.
             if (payload.type === "media-state") {
-              console.log("partner media-state:", payload.camera, payload.mic);
+              console.log("partner media-state:", payload.camera, payload.mic, payload.sharing);
               setPartnerCameraOn(payload.camera);
               setPartnerMicOn(payload.mic);
+              setPartnerSharing(Boolean(payload.sharing));
+
+              // Symmetric slots mean both people COULD start sharing in the
+              // same instant. The UI disables Share while the partner is
+              // sharing, but that's a best-effort lock that can lose a genuine
+              // simultaneous click -- this is the backstop. Same shape as the
+              // `need-offer` tie-break below: pick a winner by tab id so
+              // exactly one share survives instead of both fighting over the
+              // same slot forever.
+              if (payload.sharing && sharingRef.current && signalingRef.current.tabId > payload.from) {
+                console.warn("simultaneous share detected — stopping ours, lower tab id wins");
+                stopShare();
+              }
               return;
             }
 
@@ -586,7 +803,10 @@ export function useWatchPartyCall() {
 
             if (payload.type === "offer") {
               // Only a connection with nothing in flight can accept an offer.
-              // Anything else means glare -- both sides offered at once.
+              // Anything else means glare -- both sides offered at once. This
+              // still can't happen post-Session-4: screen share never triggers
+              // a new offer, so exactly one side (the fixed offerer) ever
+              // sends one, same as before.
               if (pc.signalingState !== "stable") {
                 console.warn("ignoring offer, signalingState is", pc.signalingState);
                 return;
@@ -678,7 +898,7 @@ export function useWatchPartyCall() {
       signalingRef.current?.leave();
       signalingRef.current = null;
     };
-  }, [sendMediaState]);
+  }, [sendMediaState, stopShare]);
 
   return {
     status,
@@ -691,5 +911,15 @@ export function useWatchPartyCall() {
     toggleMic,
     localVideoRef,
     remoteVideoRef,
+
+    sharing,
+    shareStarting,
+    partnerSharing,
+    shareWarnings,
+    canShare,
+    startShare,
+    stopShare,
+    localScreenVideoRef,
+    remoteScreenVideoRef,
   };
 }

@@ -1,0 +1,107 @@
+.stage {
+  position: relative;
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  border-radius: 10px;
+  overflow: hidden;
+  background: #000;
+}
+
+.stage__video {
+  width: 100%;
+  height: 100%;
+  /* contain, not cover: cropping someone's screen share cuts off real content
+     (a sidebar, subtitles) in a way cropping a face (CameraBox) doesn't. */
+  object-fit: contain;
+  display: none;
+}
+
+.stage__video--visible {
+  display: block;
+}
+
+.stage__placeholder {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 14px;
+  padding: 24px;
+  box-sizing: border-box;
+  background: var(--code-bg);
+}
+
+.stage__emoji {
+  font-size: 48px;
+  line-height: 1;
+}
+
+.stage__share-button {
+  font-family: var(--sans);
+  font-size: 16px;
+  padding: 10px 22px;
+  border: none;
+  border-radius: 999px;
+  background: var(--accent);
+  color: #fff;
+  cursor: pointer;
+}
+
+.stage__share-button:hover {
+  filter: brightness(1.08);
+}
+
+.stage__hint {
+  font-family: var(--mono);
+  font-size: 13px;
+  color: var(--text);
+  text-align: center;
+  max-width: 40ch;
+}
+
+.stage__banner {
+  position: absolute;
+  top: 10px;
+  left: 10px;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 12px;
+  border-radius: 999px;
+  background: rgba(0, 0, 0, 0.6);
+  color: #fff;
+  font-family: var(--mono);
+  font-size: 13px;
+}
+
+.stage__stop-button {
+  font-family: var(--sans);
+  font-size: 12px;
+  padding: 4px 12px;
+  border: none;
+  border-radius: 999px;
+  background: var(--accent);
+  color: #fff;
+  cursor: pointer;
+}
+
+.stage__warnings {
+  position: absolute;
+  bottom: 10px;
+  left: 10px;
+  right: 10px;
+  z-index: 2;
+  padding: 8px 12px;
+  border-radius: 8px;
+  background: rgba(120, 40, 0, 0.75);
+  color: #fff;
+  font-family: var(--mono);
+  font-size: 12px;
+}
+
+.stage__warnings p {
+  margin: 2px 0;
+}

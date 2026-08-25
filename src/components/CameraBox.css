@@ -1,16 +1,19 @@
 .camera-box {
   position: relative;
-  /* Grow to share the row, but never past a sane size. */
-  flex: 1 1 280px;
-  max-width: 420px;
-  /* Height stays auto so aspect-ratio actually applies. The previous rule set
-     width AND height, which makes aspect-ratio inert -- and once max-width
-     clamped the width on a phone, the box became a ~156x240 portrait sliver
-     with a badly cropped feed. */
+  /* Session 4: these tiles now live in the small corner rail over the Stage
+     (see App.css .camera-rail), not centred full-size as in Session 3 -- so
+     this is a fixed small size, not a flexible one that grows to share a row. */
+  flex: 0 0 130px;
+  width: 130px;
+  /* Height stays auto so aspect-ratio actually applies. Setting width AND
+     height makes aspect-ratio inert. */
   aspect-ratio: 16 / 9;
-  border-radius: 10px;
+  border-radius: 8px;
   overflow: hidden;
   background: #000;
+  /* The rail floats over live video, so each tile needs its own edge to read
+     against any background, light or dark, behind it. */
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.5);
 }
 
 .camera-box__video {
@@ -39,44 +42,44 @@
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: 6px;
+  gap: 3px;
   background: var(--code-bg);
 }
 
 .camera-box__emoji {
-  font-size: 36px;
+  font-size: 20px;
   line-height: 1;
 }
 
 .camera-box__placeholder-text {
   font-family: var(--mono);
-  font-size: 12px;
+  font-size: 9px;
   color: var(--text);
 }
 
 .camera-box__footer {
   position: absolute;
-  left: 8px;
-  bottom: 8px;
+  left: 5px;
+  bottom: 5px;
   /* Sits above the camera-toggle surface but must never swallow a click. */
   z-index: 2;
   pointer-events: none;
   display: flex;
   align-items: center;
-  gap: 6px;
-  padding: 3px 9px;
+  gap: 4px;
+  padding: 2px 6px;
   border-radius: 999px;
   background: rgba(0, 0, 0, 0.55);
 }
 
 .camera-box__name {
   font-family: var(--mono);
-  font-size: 12px;
+  font-size: 10px;
   color: #fff;
 }
 
 .camera-box__badge {
-  font-size: 12px;
+  font-size: 10px;
   line-height: 1;
 }
 
@@ -95,20 +98,20 @@
 
 .camera-box__mic {
   position: absolute;
-  bottom: 12px;
+  bottom: 6px;
   left: 50%;
   transform: translateX(-50%);
   /* Above the camera-toggle surface, so it takes its own clicks. */
   z-index: 3;
   display: grid;
   place-items: center;
-  width: 44px;
-  height: 44px;
+  width: 26px;
+  height: 26px;
   padding: 0;
   border: none;
   border-radius: 50%;
   background: rgba(20, 20, 20, 0.72);
-  font-size: 18px;
+  font-size: 12px;
   line-height: 1;
   cursor: pointer;
   opacity: 0;

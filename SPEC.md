@@ -98,12 +98,12 @@ Realistic expectation: on decent home internet with these applied, screen share 
 - [x] Camera on/off (device fully released) + mic mute per person, both signaled to the partner
 - [ ] Camera boxes rendered inside a Document Picture-in-Picture window (native drag, default top-right)
 - [x] STUN + TURN configured in `RTCPeerConnection`
-- [ ] Screen share (tab), one direction, quality-tuned per section 3
+- [x] Screen share (tab), quality-tuned per section 3 — built as a 4-slot reservation (mic/camera/screen-audio/screen-video) so it needs zero renegotiation; either person can share, not just one direction (see CLAUDE.md Current status — device-verification still pending as of the build date)
 - [ ] Basic live text chat (in-memory, no persistence)
 - [ ] "Request pause" nudge button + on-screen notification for sharer
 
 ### V1 — "we'd use this daily"
-- [ ] Either person can initiate screen share (renegotiation handled)
+- [x] Either person can initiate screen share — delivered for free by the MVP's 4-slot design (Session 4): no renegotiation ever happens, so there was nothing to "handle"
 - [ ] Chat persisted to Supabase Postgres, restored on refresh
 - [ ] Emoji reaction dropdown → full-screen overlay animation, broadcast to both
 - [ ] Session logging: start/end timestamps, duration, stored in DB

@@ -55,11 +55,15 @@ body {
 }
 
 #root {
-  width: 1126px;
-  max-width: 100%;
+  /* Session 4: was a fixed 1126px, sized for a text/docs page (this is a Vite
+     template leftover, not a deliberate choice for this app). The watch-party
+     screen wants to actually use the viewport -- the shared-content stage is
+     supposed to fill most of it -- so this now just tracks the window with a
+     generous cap instead of clamping everything to a reading-width column. */
+  width: 100%;
+  max-width: 1800px;
   margin: 0 auto;
   text-align: center;
-  border-inline: 1px solid var(--border);
   min-height: 100svh;
   display: flex;
   flex-direction: column;
