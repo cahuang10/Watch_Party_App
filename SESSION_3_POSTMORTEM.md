@@ -457,6 +457,12 @@ This found 3.3 in minutes after eyeballing had gotten nowhere, then verified 3.4
   in loopback; the real two-network path is not.
 - **relay ↔ relay between different networks.** The loopback failure was hairpinning
   and proves nothing.
+- **The real camera-open time.** `camera device opened in Nms` and `camera first frame at Nms` now
+  log on every toggle, but the number has only been measured in a hidden tab (where it is
+  meaningless). Read it on a real run, one tab only. If it is consistently ≥1s, the grace-period
+  option — `replaceTrack(null)` immediately but delay `track.stop()` by N seconds, so toggling back
+  inside the window costs nothing — is worth taking. The price is the camera light staying lit for
+  those N seconds. Deliberately not built without a number to justify it.
 - **The shared signaling room.** Dev and production still collide. The cheap fix is
   scoping the channel name by `import.meta.env.MODE`; the proper fix is a room id in
   the URL. Neither is done — it's a signaling-layer design change and deserves its
@@ -464,6 +470,48 @@ This found 3.3 in minutes after eyeballing had gotten nowhere, then verified 3.4
 - **Document Picture-in-Picture** (locked decision #7). Untouched; the decision
   stands. Revisit after Session 4, once screen share exists and it's clear whether
   losing sight of each other actually bothers you.
+
+---
+
+### 3.10 — The cost of releasing the camera, and the black block
+
+Once camera-off genuinely released the device, turning it back on took ~1s and showed a black
+rectangle during the wait.
+
+**The latency is not a bug and cannot be optimised away.** Camera light off ⟺ device closed ⟺ cold
+`getUserMedia` on return. Every lever that reduces it amounts to holding the device open longer,
+which means the light stays lit longer. Worth stating plainly rather than implying it can be tuned.
+
+It had *felt* instant before only because a stray tab was holding the camera open continuously, so
+`getUserMedia` attached to an already-warm device. The old speed was a symptom of the bug.
+
+**The black block is a separate, fully fixable UI gap.** `cameraOn` flips the instant you click, so
+the placeholder unmounts, but frames don't arrive for several hundred ms — leaving the `<video>`
+rendering black in between.
+
+**Fix.** Hold the placeholder until a frame is genuinely on screen. The important subtlety:
+
+> `getUserMedia` resolving means a track **exists**, not that frames are **rendering**.
+
+Lifting the cover on the promise still flashes black while the element decodes. `requestVideoFrameCallback`
+fires when a frame is actually presented; that is the correct signal. Plus a 180ms cross-fade so the
+swap reads as deliberate.
+
+**And the trap inside the fix.** `requestVideoFrameCallback` **does not fire while the document is
+hidden** — Chrome suspends frame callbacks for background tabs. Without a guard, the wait degrades
+into "sit out the entire timeout":
+
+| condition | time to resolve |
+|---|---|
+| unguarded, hidden tab | **3700ms** |
+| guarded with `document.hidden` | **0ms** |
+
+This is not an edge case from Session 4 onward: the sharer sits on the content tab with the app tab
+backgrounded, so hidden *is* the normal state. Guard up front, and listen for `visibilitychange` to
+bail if the tab is backgrounded mid-wait.
+
+**Lesson.** A "wait for the thing to be ready" primitive needs to know what happens when the thing
+can never become ready. Both failure modes — never fires, and stops firing halfway — need an exit.
 
 ---
 

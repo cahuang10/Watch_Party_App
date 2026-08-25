@@ -15,6 +15,7 @@ function CameraBox({
   mirrored = false,
   cameraOn = true,
   micOn = true,
+  starting = false,
   interactive = false,
   onToggleCamera,
   onToggleMic,
@@ -34,11 +35,16 @@ function CameraBox({
       />
 
       {/* Opaque, so it fully covers whatever frame the video element is holding
-          on to underneath. */}
-      {!cameraOn && (
+          on to underneath -- including the black one it shows while a freshly
+          opened camera is still decoding. `starting` keeps it up through that
+          gap: the camera is intended-on but has no frames yet, and dropping the
+          cover any earlier is exactly the black flash this is here to prevent. */}
+      {(!cameraOn || starting) && (
         <div className="camera-box__placeholder">
-          <span className="camera-box__emoji">🫥</span>
-          <span className="camera-box__placeholder-text">camera off</span>
+          <span className="camera-box__emoji">{starting ? "📷" : "🫥"}</span>
+          <span className="camera-box__placeholder-text">
+            {starting ? "starting camera…" : "camera off"}
+          </span>
         </div>
       )}
 
@@ -55,6 +61,9 @@ function CameraBox({
             className="camera-box__surface"
             onClick={onToggleCamera}
             aria-pressed={!cameraOn}
+            /* Driven by intent, never by `starting` -- a button that relabels
+               itself mid-press is disorienting, and it stays clickable while
+               starting because the op counter handles supersession. */
             aria-label={cameraOn ? "Turn camera off" : "Turn camera on"}
           />
           <button

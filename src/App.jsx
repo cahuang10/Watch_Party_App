@@ -8,6 +8,7 @@ function App() {
   const {
     status,
     cameraOn,
+    cameraStarting,
     micOn,
     partnerCameraOn,
     partnerMicOn,
@@ -36,6 +37,7 @@ function App() {
           mirrored
           cameraOn={cameraOn}
           micOn={micOn}
+          starting={cameraStarting}
           interactive
           onToggleCamera={toggleCamera}
           onToggleMic={toggleMic}

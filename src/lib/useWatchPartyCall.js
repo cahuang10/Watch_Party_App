@@ -31,6 +31,10 @@ export function useWatchPartyCall() {
   const [micOn, setMicOn] = useState(true);
   const [partnerCameraOn, setPartnerCameraOn] = useState(true);
   const [partnerMicOn, setPartnerMicOn] = useState(true);
+  // True while a getUserMedia is in flight for OUR camera. Without this the tile
+  // renders a black rectangle for the whole device-open: `cameraOn` flips the
+  // instant you click, but the frames don't arrive for several hundred ms.
+  const [cameraStarting, setCameraStarting] = useState(false);
 
   // Same two values as state, mirrored into refs. The effect below runs once and
   // its callbacks would otherwise close over the values from the first render
@@ -84,6 +88,49 @@ export function useWatchPartyCall() {
     sendMediaState();
   }, [sendMediaState]);
 
+  // `getUserMedia` resolving means a track EXISTS, not that frames are being
+  // painted -- the element still has to decode its first one. Lifting the
+  // placeholder on the promise therefore still flashes black. This waits for a
+  // frame to actually reach the screen. The timeout is a safety net: a camera
+  // that never produces a frame must not wedge the tile in "starting..." forever.
+  const waitForFirstFrame = useCallback((el, timeoutMs = 2000) => {
+    return new Promise((resolve) => {
+      if (!el) return resolve();
+
+      // requestVideoFrameCallback does NOT fire while the document is hidden --
+      // Chrome suspends frame callbacks for background tabs. Waiting there just
+      // burns the whole timeout, and there is no visible flash to prevent when
+      // nobody is looking at the tile. This is not an edge case: Session 4 puts
+      // the sharer on the content tab with this one in the background, so a
+      // hidden document is the normal state while sharing.
+      if (document.hidden) return resolve();
+
+      let done = false;
+      const finish = () => {
+        if (done) return;
+        done = true;
+        clearTimeout(timer);
+        document.removeEventListener("visibilitychange", onVisibilityChange);
+        resolve();
+      };
+      // Backgrounded mid-wait: frames stop arriving, so give up now rather than
+      // sitting out the timeout.
+      const onVisibilityChange = () => {
+        if (document.hidden) finish();
+      };
+      document.addEventListener("visibilitychange", onVisibilityChange);
+
+      // Safety net for a camera that opens but never produces a frame.
+      const timer = setTimeout(finish, timeoutMs);
+      if (typeof el.requestVideoFrameCallback === "function") {
+        el.requestVideoFrameCallback(() => finish());
+      } else {
+        // Older engines: `playing` is the closest signal available.
+        el.addEventListener("playing", () => finish(), { once: true });
+      }
+    });
+  }, []);
+
   const toggleCamera = useCallback(async () => {
     const next = !cameraOnRef.current;
     cameraOnRef.current = next;
@@ -120,7 +167,25 @@ export function useWatchPartyCall() {
       // On: fetch a fresh track and plug it into the same slot. `stop()` is
       // permanent -- a stopped track can never be restarted -- so coming back
       // always means a new getUserMedia, and that's the ~300ms light-blink.
-      const cameraStream = await navigator.mediaDevices.getUserMedia({ video: true });
+      // Opening a camera is genuinely slow -- this is the cost of `stop()`ing it
+      // on the way out. Timed so the number is observable rather than argued
+      // about; if it's consistently over ~1s the grace-period option in
+      // SESSION_3_POSTMORTEM Part 6 is worth taking.
+      setCameraStarting(true);
+      const openedAt = performance.now();
+      let cameraStream;
+      try {
+        cameraStream = await navigator.mediaDevices.getUserMedia({ video: true });
+      } catch (err) {
+        // Only on failure do we clear it here -- on success the placeholder has
+        // to stay up until a frame is on screen (see the end of this branch).
+        // Without this a denied camera strands the tile in "starting..." forever.
+        // Only the newest toggle may clear the flag: an older one finishing late
+        // must not un-blank a tile still waiting on its own device.
+        if (op === cameraOpRef.current) setCameraStarting(false);
+        throw err;
+      }
+      console.log(`camera device opened in ${Math.round(performance.now() - openedAt)}ms`);
       const videoTrack = cameraStream.getVideoTracks()[0];
       if (op !== cameraOpRef.current || !cameraOnRef.current || localStreamRef.current !== stream) {
         // Superseded by a later toggle, toggled off again, or the peering
@@ -128,6 +193,7 @@ export function useWatchPartyCall() {
         // us sends their own state. Stopping the track here is the whole point:
         // an abandoned track holds the camera open forever.
         videoTrack.stop();
+        if (op === cameraOpRef.current) setCameraStarting(false);
         return;
       }
       // Belt and braces: clear the slot before filling it, so the stream can
@@ -139,6 +205,13 @@ export function useWatchPartyCall() {
       });
       await sender?.replaceTrack(videoTrack);
       stream.addTrack(videoTrack);
+
+      // srcObject has to be set before we can wait on the element, and the
+      // reassignment at the end of this function is too late for that.
+      if (localVideoRef.current) localVideoRef.current.srcObject = stream;
+      await waitForFirstFrame(localVideoRef.current);
+      console.log(`camera first frame at ${Math.round(performance.now() - openedAt)}ms`);
+      if (op === cameraOpRef.current) setCameraStarting(false);
     }
     // No stream at all means no partner yet, so there is nothing to do to the
     // hardware -- the flag above is pre-arm intent, honoured by openDevices().
@@ -157,7 +230,7 @@ export function useWatchPartyCall() {
     );
 
     sendMediaState();
-  }, [sendMediaState]);
+  }, [sendMediaState, waitForFirstFrame]);
 
   useEffect(() => {
     let cancelled = false;
@@ -443,7 +516,15 @@ export function useWatchPartyCall() {
             // ate Session 2: state belonging to a peering session outliving it.
             const token = peeringTokenRef.current;
             setStatus("opening camera...");
-            const stream = await openDevices();
+            setCameraStarting(true);
+            const openedAt = performance.now();
+            let stream;
+            try {
+              stream = await openDevices();
+            } finally {
+              setCameraStarting(false);
+            }
+            console.log(`devices opened in ${Math.round(performance.now() - openedAt)}ms`);
             if (cancelled || token !== peeringTokenRef.current) {
               console.warn("peering session changed while opening devices — discarding stream");
               stream.getTracks().forEach((track) => track.stop());
@@ -602,6 +683,7 @@ export function useWatchPartyCall() {
   return {
     status,
     cameraOn,
+    cameraStarting,
     micOn,
     partnerCameraOn,
     partnerMicOn,

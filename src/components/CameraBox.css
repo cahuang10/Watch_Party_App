@@ -32,6 +32,9 @@
 .camera-box__placeholder {
   position: absolute;
   inset: 0;
+  /* Fades in on mount and, more importantly, reads as a deliberate transition
+     rather than a cut when live video replaces it. */
+  animation: camera-box-fade-in 180ms ease both;
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -130,4 +133,15 @@
   .camera-box__mic {
     opacity: 1;
   }
+}
+
+@keyframes camera-box-fade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+/* The video underneath fades up as the placeholder is removed, so the swap to
+   live frames is a dissolve instead of a jump cut. */
+.camera-box__video {
+  animation: camera-box-fade-in 180ms ease both;
 }
