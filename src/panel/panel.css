@@ -5,6 +5,17 @@
 
 :root {
   color-scheme: dark;
+
+  /* Session 3E: these four moved here from the deleted src/index.css, which was
+     the old web-app's global stylesheet. CameraBox.css reads all four, and the
+     panel document never loaded index.css -- so before this, the tiles rendered
+     with every custom property unresolved (transparent placeholder, default
+     serif label). Values re-picked to sit on the panel's #16161a, not on the
+     old app's white. */
+  --mono: ui-monospace, Consolas, monospace;
+  --text: #8a8a93;
+  --code-bg: #1f2028;
+  --accent: #c084fc;
 }
 
 * {
@@ -53,9 +64,80 @@ body {
   color: #8a8a93;
 }
 
-.panel__note {
+/* Deliberately reads like debug output, because it is. The panel iframe's
+   console is the third of three (CLAUDE.md, "Three consoles") and the easiest
+   one to forget to select in the DevTools dropdown -- so connection state is
+   put on screen rather than left only in a log nobody is looking at. */
+.panel__status {
+  margin: 0;
+  font-family: var(--mono);
+  font-size: 11px;
+  line-height: 1.4;
+  color: var(--text);
+  /* A long error message must not widen the panel or clip -- the sidebar is
+     only ~288px of usable width. */
+  overflow-wrap: anywhere;
+}
+
+/* Stacked, not side by side. The old web-app rail laid these out in a row over
+   the corner of the Stage; a 25% sidebar is tall and narrow, so the tiles go
+   down the panel instead. */
+.panel__tiles {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+/* Placeholder for Session 5E. Reserving the space now means chat lands in the
+   panel's remaining height instead of reshuffling this layout later. */
+.panel__chat-placeholder {
+  flex: 1;
+  min-height: 60px;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px dashed #2c2c33;
+  color: var(--text);
+  font-family: var(--mono);
+  font-size: 11px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  padding: 8px;
+}
+
+/* Shown when the camera permission is missing for the extension origin. Chrome
+   cannot prompt inside this iframe (see src/permission/permission.js), so the
+   panel's only move is to explain and hand off to a page that can. */
+.panel__notice {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px;
+  border: 1px solid var(--accent);
+  border-radius: 8px;
+  background: rgba(192, 132, 252, 0.12);
+}
+
+.panel__notice-text {
   margin: 0;
   font-size: 12px;
-  line-height: 1.5;
-  color: #8a8a93;
+  line-height: 1.45;
+  color: #e8e8ea;
+}
+
+.panel__notice-button {
+  padding: 7px 10px;
+  border: none;
+  border-radius: 6px;
+  background: var(--accent);
+  color: #1b1024;
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.panel__notice-button:hover {
+  filter: brightness(1.1);
 }

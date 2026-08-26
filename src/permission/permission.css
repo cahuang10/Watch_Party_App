@@ -1,0 +1,42 @@
+/* Standalone page at the extension origin, opened in a real tab. Deliberately
+   shares nothing with panel.css -- this is a full-window document, not a 25%
+   sidebar, and coupling the two would mean a panel layout tweak could silently
+   wreck the one page a new machine has to get through. */
+
+:root {
+  color-scheme: dark;
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  box-sizing: border-box;
+  font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+  background: #16161a;
+  color: #e8e8ea;
+}
+
+#root {
+  max-width: 460px;
+  text-align: center;
+}
+
+.heading {
+  margin: 0 0 12px;
+  font-size: 20px;
+  font-weight: 600;
+}
+
+.heading--good { color: #4ade80; }
+.heading--bad { color: #f87171; }
+.heading--pending { color: #e8e8ea; }
+
+.body {
+  margin: 0;
+  font-size: 14px;
+  line-height: 1.6;
+  color: #8a8a93;
+}

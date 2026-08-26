@@ -44,6 +44,14 @@ export function useWatchPartyCall() {
   // renders a black rectangle for the whole device-open: `cameraOn` flips the
   // instant you click, but the frames don't arrive for several hundred ms.
   const [cameraStarting, setCameraStarting] = useState(false);
+  // Whether the local devices are actually OPEN. Distinct from `cameraOn`,
+  // which is only intent: the devices deliberately stay shut until a partner
+  // arrives (see openDevices), so alone in an empty room `cameraOn` is true
+  // while nothing is running. Without this the tile renders a bare <video>
+  // with no srcObject -- a black rectangle claiming the camera is live --
+  // which is the same species of lie as the camera-light bug from Session 3,
+  // just pointing the other way.
+  const [devicesOpen, setDevicesOpen] = useState(false);
 
   const [sharing, setSharing] = useState(false);
   const [shareStarting, setShareStarting] = useState(false);
@@ -630,6 +638,7 @@ export function useWatchPartyCall() {
       // https and localhost, so re-acquiring is silent.)
       localStreamRef.current?.getTracks().forEach((track) => track.stop());
       localStreamRef.current = null;
+      setDevicesOpen(false);
       if (localVideoRef.current) localVideoRef.current.srcObject = null;
 
       // The screen capture is call-scoped too, for the same reason: no partner
@@ -735,6 +744,7 @@ export function useWatchPartyCall() {
               return;
             }
             localStreamRef.current = stream;
+            setDevicesOpen(true);
             if (localVideoRef.current) localVideoRef.current.srcObject = stream;
 
             pcRef.current = createPeerConnection(isOfferer);
@@ -904,6 +914,7 @@ export function useWatchPartyCall() {
     status,
     cameraOn,
     cameraStarting,
+    devicesOpen,
     micOn,
     partnerCameraOn,
     partnerMicOn,

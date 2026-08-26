@@ -27,12 +27,19 @@ export default defineConfig({
     minify: false,
 
     rollupOptions: {
-      // Listed explicitly, which is also what stops the old web-app entry
-      // (index.html -> src/main.jsx) from being built. Those files still exist;
-      // Session 3E adapts App.jsx and CameraBox.jsx into the panel.
+      // Listed explicitly. The old web-app entry (index.html -> src/main.jsx,
+      // plus App.jsx and Stage.jsx) was deleted in Session 3E once its logic
+      // was adapted into panel.html -> src/panel/Panel.jsx -- see CameraBox.jsx,
+      // reused unchanged, and useWatchPartyCall.js, which moved consumers but
+      // not itself.
       input: {
         panel: resolve(import.meta.dirname, "panel.html"),
         background: resolve(import.meta.dirname, "src/background/background.js"),
+        // Session 3E. A top-level extension page whose only job is to hold the
+        // camera/mic permission prompt, which Chrome refuses to show inside the
+        // panel's injected iframe -- see src/permission/permission.js for the
+        // full reasoning. Opened in a tab from the panel, once per profile.
+        permission: resolve(import.meta.dirname, "permission.html"),
       },
 
       output: {

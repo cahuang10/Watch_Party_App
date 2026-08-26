@@ -8,6 +8,11 @@ import "./CameraBox.css";
 //
 // `interactive` is only ever true for your own tile. You can't turn your
 // partner's camera on or mute their mic -- their tile is display-only.
+// `idle` means there is no call yet, so no stream is flowing regardless of what
+// `cameraOn` says. It has to be its own flag rather than being folded into
+// `cameraOn`, because the two are genuinely different states that need
+// different words on screen: "camera off" is something you did and can undo by
+// clicking, "waiting for partner" is not.
 function CameraBox({
   videoRef,
   label,
@@ -16,6 +21,7 @@ function CameraBox({
   cameraOn = true,
   micOn = true,
   starting = false,
+  idle = false,
   interactive = false,
   onToggleCamera,
   onToggleMic,
@@ -39,11 +45,17 @@ function CameraBox({
           opened camera is still decoding. `starting` keeps it up through that
           gap: the camera is intended-on but has no frames yet, and dropping the
           cover any earlier is exactly the black flash this is here to prevent. */}
-      {(!cameraOn || starting) && (
+      {(!cameraOn || starting || idle) && (
         <div className="camera-box__placeholder">
-          <span className="camera-box__emoji">{starting ? "📷" : "🫥"}</span>
+          <span className="camera-box__emoji">
+            {starting ? "📷" : idle && cameraOn ? "💤" : "🫥"}
+          </span>
           <span className="camera-box__placeholder-text">
-            {starting ? "starting camera…" : "camera off"}
+            {starting
+              ? "starting camera…"
+              : idle && cameraOn
+                ? "waiting for partner"
+                : "camera off"}
           </span>
         </div>
       )}

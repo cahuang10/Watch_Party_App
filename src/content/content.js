@@ -62,7 +62,15 @@
     // the page's. That's what makes one camera permission work on every site.
     // Loading it from a page requires "panel.html" to be listed in
     // web_accessible_resources -- without that the frame silently stays blank.
-    iframe.src = chrome.runtime.getURL("panel.html");
+    //
+    // Session 3E: the panel's own URL never carries a query string, so
+    // useWatchPartyCall's `?relay=1` read (window.location.search, forcing
+    // TURN-only ICE to test the relay) would silently never see it. Forward
+    // the flag from the HOST page's URL onto the iframe's, so the existing
+    // "load the page with ?relay=1" workflow still works unchanged.
+    const forceRelay = new URLSearchParams(window.location.search).get("relay") === "1";
+    const panelUrl = chrome.runtime.getURL("panel.html");
+    iframe.src = forceRelay ? `${panelUrl}?relay=1` : panelUrl;
 
     // Permissions-Policy delegation. A cross-origin iframe is denied camera and
     // mic by default, and the resulting getUserMedia failure is a

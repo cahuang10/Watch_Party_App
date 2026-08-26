@@ -12,17 +12,15 @@ import "./panel.css";
 // looks wrong, since it needs no camera, no permission, and no second device.
 // See SESSION_3_POSTMORTEM.md Part 5.
 //
-// NOTE: `import.meta.env.DEV` is false in a `vite build`, and this panel is
-// ONLY ever loaded from a build -- there is no dev server in the extension
-// architecture. So this helper is currently never present. Session 3E should
-// drop the gate (or swap it for an explicit flag) when it starts needing the
-// test; the import is kept here so the wiring isn't forgotten.
-if (import.meta.env.DEV) {
-  import("../lib/loopbackTest").then(({ runLoopbackTest }) => {
-    window.__loopbackTest = runLoopbackTest;
-    console.log("dev helper ready: window.__loopbackTest()");
-  });
-}
+// Session 3E: unconditional, not behind import.meta.env.DEV. That flag is
+// FALSE in a `vite build`, and this panel is only ever loaded from a build --
+// there is no dev server in the extension architecture -- so the gate made
+// this helper permanently unreachable. This is a two-person tool that never
+// ships to anyone else, so there's no audience to hide a debug helper from.
+import("../lib/loopbackTest").then(({ runLoopbackTest }) => {
+  window.__loopbackTest = runLoopbackTest;
+  console.log("dev helper ready: window.__loopbackTest()");
+});
 
 createRoot(document.getElementById("root")).render(
   <StrictMode>
