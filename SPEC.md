@@ -124,7 +124,7 @@ Sessions 1–4 were built against the web-app architecture. Marked below by what
 ### MVP — extension shell
 - [x] Session 1E: extension scaffold — manifest, service worker, content script, panel build pipeline
 - [x] Session 2E: docked sidebar that squeezes the page, verified on YouTube **and** other real sites (Twitch) — collapse/expand deferred, see Session Plan below
-- [ ] Session 3E: existing peer connection running inside the panel iframe; camera tiles live again
+- [x] Session 3E: existing peer connection running inside the panel iframe; camera tiles live again — verified with a real two-device call on one network
 - [ ] Session 4E: `chrome.tabCapture` replacing `getDisplayMedia`, including local audio playback so the sharer isn't muted
 - [ ] Session 5E: chat in the panel (live only)
 - [ ] Request-pause nudge
@@ -162,8 +162,12 @@ Manifest V3, service worker, content script, panel page. Get the Vite multi-entr
 **Session 2E — Docked sidebar and page squeeze — done**
 Delivered: the width/transform split (`<html>` width, `<body>` transform — not both on `<html>`, see section 1), the resize dispatch, verified on real YouTube and Twitch. **Collapse/expand was deliberately scoped out** — it needs panel→content-script messaging (the button lives in the React panel, the squeeze lives in the content script), a separate mechanism from the squeeze itself. Still open for a future session. *This was the whole bet, and it held — the architecture is validated on real sites.*
 
-**Session 3E — Rehome the peer connection**
-Move existing WebRTC code into the panel iframe. Camera permission at extension origin. Get the two-device camera call working again. Run the loopback test first.
+**Session 3E — Rehome the peer connection — done**
+Delivered: the call moved into the panel iframe, the old web-app shell (`App.jsx`, `Stage.jsx`, `main.jsx`, `index.html`) deleted, and a real two-device camera call verified on two machines.
+
+The session's one surprise was camera permission: Chrome **will not display a getUserMedia prompt whose requesting origin is a `chrome-extension://` document embedded as a subframe in a web page** — there is nowhere honest to anchor it, so Chrome auto-denies with `NotAllowedError` and no prompt appears in any console. This is distinct from Permissions-Policy delegation, which the `allow="camera; microphone"` attribute already handled. The fix is `permission.html`, a top-level extension page that asks once; media grants are stored per origin, so the panel iframe inherits it. Once per browser profile, not once per site.
+
+Still open, deliberately not blocking: the `?relay=1` TURN check on two devices.
 
 **Session 4E — Tab capture**
 Replace `getDisplayMedia` with `chrome.tabCapture.getMediaStreamId()`. Keep the 4-slot design — capture source changed, negotiation did not. Handle the muted-tab problem.

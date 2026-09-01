@@ -80,6 +80,8 @@ Items 2–4 already exist in `screenShare.js` (`applyScreenQuality`, `preferVide
 - **MediaStreams cannot cross documents.** Stream ids can. This is why the peer connection lives in the panel iframe (locked decision #3), and why an offscreen document — which would survive navigation — doesn't help: it can't render into the sidebar.
 - **Hard navigation destroys the panel iframe** and drops the call. SPA navigation (YouTube's normal browsing) does not. Accepted for MVP; V2 problem.
 - **Content scripts don't retroactively inject.** Pages open before install have none, and `chrome://` pages never do. The service worker must try `sendMessage`, catch the failure, and inject via `chrome.scripting.executeScript`. The bare "Could not establish connection. Receiving end does not exist." error means exactly this.
+- **Chrome will not show a camera/mic prompt inside the panel iframe, and this is not the Permissions-Policy problem.** A `getUserMedia` whose requesting origin is a `chrome-extension://` document embedded as a subframe in a web page is auto-denied: the omnibox says youtube.com but the asker is the extension, and rather than show something spoofable Chrome refuses. It rejects with `NotAllowedError` — byte-for-byte what a user clicking "Block" produces — and **no prompt appears in any of the three consoles**. The `allow="camera; microphone"` attribute on the iframe is necessary but not sufficient: delegation says the frame is allowed to *ask*, it does not create somewhere to ask. Fix is `permission.html` (`src/permission/permission.js`), a top-level extension page opened in a real tab where the omnibox genuinely reads `chrome-extension://<id>`. Media grants are stored per **origin**, so the panel iframe inherits it. Once per browser profile, not once per site — which is the whole payoff of locked decision #3. `Panel.jsx` detects the missing grant with `navigator.permissions.query({name:"camera"})` and surfaces a button; it listens for `change` so the banner clears itself when you grant in the other tab.
+- **`cameraOn` is intent, not device state.** The devices deliberately stay shut until a partner arrives (`openDevices` is called from `onPeerOnline`, never at load), so alone in an empty room `cameraOn` is `true` while nothing is running — and a `<video>` with no `srcObject` paints black. A tile keyed only on `cameraOn` therefore claims the camera is live when the app has deliberately not opened it: the Session 3 camera-light lie, pointing the other way. `useWatchPartyCall` exports `devicesOpen` for exactly this, and `CameraBox` takes a separate `idle` prop so "waiting for partner" and "camera off" are different words on screen.
 - **Secrets are baked into the bundle.** Vite inlines env vars at build time, so the Supabase anon key and TURN credentials are readable by anyone with the folder. Fine for two people. Not fine if published.
 - **Sites can fight injected UI.** z-index wars, CSP, layout assumptions. YouTube behaves. Test the others before committing.
 
@@ -113,7 +115,7 @@ Items 2–4 already exist in `screenShare.js` (`applyScreenQuality`, `preferVide
 
 ## Current status
 
-**Working on:** Session 3E next — rehome the peer connection into the panel iframe. Sessions 1E and 2E are done.
+**Working on:** Session 4E next — `chrome.tabCapture` replacing `getDisplayMedia`. Sessions 1E, 2E and 3E are done.
 
 **Correction:** earlier notes claimed a throwaway prototype in `watchparty-ext/`. It never existed — not on disk, not in any commit. Sessions 1E and 2E were built and verified with no prior reference.
 
@@ -125,6 +127,12 @@ Items 2–4 already exist in `screenShare.js` (`applyScreenQuality`, `preferVide
 - `npm run dev` / `preview` removed — no dev server in this architecture. `.claude/launch.json` still points at the deleted `dev` script.
 
 **Session 2E built:** `src/content/content.js` now squeezes the page — `applySqueeze`/`removeSqueeze`, wired into `togglePanel`. The corrected mechanism (width on `<html>`, transform on `<body>` — **not** both on `<html>` as an earlier draft of this doc said) is in the "Known tricky areas" bullet above. Verified against the actual built `dist/content.js` bundle, not a simulation: real youtube.com (masthead/guide/bottom-bar squeeze correctly, player reflows 880→640px, 3 clean toggle cycles with zero width drift) and real twitch.tv (zero overflow introduced by the squeeze, confirmed via before/after comparison after an initial reading turned out to be a page-still-loading artifact). Collapse-to-thin-strip was deliberately deferred, not built — panel open/closed (via the existing toggle) is the only state.
+
+**Session 3E built:** the call now runs in the panel iframe. `Panel.jsx` renders the status line and two stacked `CameraBox` tiles driven by `useWatchPartyCall`; the old web-app shell (`App.jsx`, `App.css`, `Stage.jsx`, `Stage.css`, `main.jsx`, `index.html`, `index.css`) is deleted, and `.claude/launch.json` went with it (it pointed at an `npm run dev` script that no longer exists). `?relay=1` now reaches the panel: the content script reads it off the host page's URL and appends it to the iframe `src`, since `chrome-extension://.../panel.html` never carries a query string of its own. The loopback-test import in `main.jsx` was un-gated — `import.meta.env.DEV` is always false in this architecture, so the helper had never once been reachable.
+
+**Verified 2026-09-01, two real machines on one network:** two independent installs, two independent cameras, signaling and presence pairing, a live two-way camera call rendering inside the docked panel with 2E's page squeeze still intact underneath it.
+
+**Still open from 3E, deliberately not blocking:** the `?relay=1` TURN check on two devices. Worth running before 4E's capture work lands on top of it.
 
 **Not verified — needs a real loaded extension, not just the browser pane:** fullscreen behavior (reasoned to work — fullscreen promotes to the browser's top layer, above any z-index — but `requestFullscreen()` needs a genuine user gesture automation can't provide), and real cross-device use.
 
@@ -151,8 +159,8 @@ Items 2–4 already exist in `screenShare.js` (`applyScreenQuality`, `preferVide
 
 1. **1E** — Extension scaffold: manifest, service worker, content script, Vite multi-entry build, load/reload loop. **Done.**
 2. **2E** — Docked sidebar + page squeeze. **Done** — verified on real YouTube and Twitch. Collapse/expand deferred, still open.
-3. **3E** — Rehome the peer connection into the panel iframe; camera call working again ← next
-4. **4E** — Tab capture replacing `getDisplayMedia`; handle the muted-tab problem
+3. **3E** — Rehome the peer connection into the panel iframe; camera call working again. **Done** — verified on two real machines.
+4. **4E** — Tab capture replacing `getDisplayMedia`; handle the muted-tab problem ← next
 5. **5E** — Chat (live, then persisted)
 6. Request-pause nudge
 7. Emoji reactions (overlay on the page — the extension can do this properly now)

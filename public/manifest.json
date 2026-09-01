@@ -5,7 +5,9 @@
   "description": "Camera tiles and chat docked beside whatever you're watching.",
 
   "permissions": [
-    "scripting"
+    "scripting",
+    "tabCapture",
+    "activeTab"
   ],
 
   "host_permissions": [

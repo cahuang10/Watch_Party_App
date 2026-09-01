@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { iceServers } from "./iceServers";
 import { joinSignalingChannel } from "./signaling";
 import { SLOT_ORDER, resolveSlots } from "./mediaSlots";
-import { captureScreen, applyScreenQuality, preferVideoCodecs } from "./screenShare";
+import { captureTab, applyScreenQuality, preferVideoCodecs } from "./screenShare";
 
 // If we believe we're the answerer but no offer shows up in this long, assume the
 // offerer election picked wrong (a stale presence entry is the usual cause) and
@@ -34,6 +34,14 @@ export function useWatchPartyCall() {
   // its srcObject.
   const localScreenVideoRef = useRef(null);
   const remoteScreenVideoRef = useRef(null);
+  // The muted-tab fix (Session 4E). Capturing a tab's audio makes Chrome stop
+  // routing that tab to the speakers, so without playing the captured audio
+  // back the SHARER watches their own tab in silence and it reads as a broken
+  // capture. Its own <audio> element rather than the local video preview,
+  // because the preview is viewer-facing and may not be rendered at all on the
+  // sharer's side -- hearing your own tab must not depend on a visual element
+  // existing.
+  const localScreenAudioRef = useRef(null);
 
   const [status, setStatus] = useState("waiting for partner...");
   const [cameraOn, setCameraOn] = useState(true);
@@ -56,15 +64,17 @@ export function useWatchPartyCall() {
   const [sharing, setSharing] = useState(false);
   const [shareStarting, setShareStarting] = useState(false);
   const [partnerSharing, setPartnerSharing] = useState(false);
-  // Populated when captureScreen() detects the user picked a window/screen
-  // instead of a tab, or shared without tab audio. Shown in the UI rather than
-  // thrown, because the share is still real and still worth displaying.
+  // Populated when captureTab() finds the capture came back without an audio
+  // track. Shown in the UI rather than thrown, because the share is still real
+  // and still worth displaying.
   const [shareWarnings, setShareWarnings] = useState([]);
 
-  // Static for the life of the app -- iOS Safari has no getDisplayMedia at all,
-  // which is exactly locked decision #5 (phones are viewer-only). Computed once
-  // rather than as state since it can't change while the page is open.
-  const canShare = typeof navigator !== "undefined" && typeof navigator.mediaDevices?.getDisplayMedia === "function";
+  // Static for the life of the panel. Computed once rather than as state since
+  // it cannot change while the document is open.
+  // Session 4E: this used to feature-detect getDisplayMedia, which is no longer
+  // the API in use. The tabCapture namespace only exists in a context the
+  // manifest permission covers, so its presence is the honest test now.
+  const canShare = typeof chrome !== "undefined" && Boolean(chrome.tabCapture);
 
   // Same values as state, mirrored into refs. The effect below runs once and
   // its callbacks would otherwise close over the values from the first render
@@ -97,10 +107,10 @@ export function useWatchPartyCall() {
   // stays open behind them -- the camera light stays on with the UI showing
   // "camera off", which is exactly the failure that looks like a lie.
   const cameraOpRef = useRef(0);
-  // Same idea for screen capture: getDisplayMedia is async and its own picker
-  // adds an unpredictable delay, so a double-click on Share can leave two tab
-  // captures live -- the abandoned one still shows Chrome's "sharing" indicator
-  // for a tab nobody is using.
+  // Same idea for tab capture: the stream-id round trip through the content
+  // script and service worker is async, so a double-click on Share can leave
+  // two captures live -- the abandoned one still shows Chrome's "sharing"
+  // indicator for a capture nobody is using.
   const shareOpRef = useRef(0);
   // Bumped every time a peering session is torn down, so async work started by
   // the old session can notice it has been outlived. See onPeerOnline.
@@ -301,12 +311,12 @@ export function useWatchPartyCall() {
 
     let capture;
     try {
-      capture = await captureScreen();
+      capture = await captureTab();
     } catch (err) {
-      // By far the most common case is the user closing the picker without
-      // choosing anything (NotAllowedError). That's not a connection problem,
-      // just a share that didn't start -- no need to touch `status` over it.
-      console.warn("screen capture cancelled or failed:", err.name, err.message);
+      // There is no picker to cancel any more, so unlike the getDisplayMedia
+      // era this is always a real failure rather than a user shrug -- a dead
+      // stream id, a refused capture, or the relay timing out.
+      console.warn("tab capture failed:", err.name, err.message);
       return;
     }
     const { stream, warnings } = capture;
@@ -343,6 +353,8 @@ export function useWatchPartyCall() {
 
     localScreenStreamRef.current = stream;
     if (localScreenVideoRef.current) localScreenVideoRef.current.srcObject = stream;
+    // Give the sharer their tab's sound back. See localScreenAudioRef above.
+    if (localScreenAudioRef.current) localScreenAudioRef.current.srcObject = stream;
     await waitForFirstFrame(localScreenVideoRef.current);
     if (op === shareOpRef.current) setShareStarting(false);
 
@@ -367,6 +379,7 @@ export function useWatchPartyCall() {
     stream?.getTracks().forEach((track) => track.stop());
     localScreenStreamRef.current = null;
     if (localScreenVideoRef.current) localScreenVideoRef.current.srcObject = null;
+    if (localScreenAudioRef.current) localScreenAudioRef.current.srcObject = null;
 
     try {
       await slots.screenVideo?.sender.replaceTrack(null);
@@ -656,6 +669,7 @@ export function useWatchPartyCall() {
       localScreenStreamRef.current?.getTracks().forEach((track) => track.stop());
       localScreenStreamRef.current = null;
       if (localScreenVideoRef.current) localScreenVideoRef.current.srcObject = null;
+      if (localScreenAudioRef.current) localScreenAudioRef.current.srcObject = null;
 
       // Without this the partner's frozen last frame stays on screen, looking
       // exactly like a live connection.
@@ -932,5 +946,6 @@ export function useWatchPartyCall() {
     stopShare,
     localScreenVideoRef,
     remoteScreenVideoRef,
+    localScreenAudioRef,
   };
 }

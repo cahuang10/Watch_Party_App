@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import CameraBox from "../components/CameraBox";
+import ShareStage from "./ShareStage";
 import { useWatchPartyCall } from "../lib/useWatchPartyCall";
 
 // Session 3E: the call itself moved from src/App.jsx (the old web-app entry,
@@ -56,6 +57,55 @@ function useCameraPermission() {
   return state;
 }
 
+// Tells the content script how wide to make this iframe. The panel cannot
+// resize itself -- it does not own its own frame element -- so width is a
+// message, not a style.
+//
+// Expanded is VIEWER-ONLY, and deliberately so: the sharer is already watching
+// the real tab at 75%, and covering it with a redundant preview of itself would
+// be strictly worse than leaving it alone.
+function usePanelMode(expanded) {
+  useEffect(() => {
+    // targetOrigin "*" because the panel genuinely does not know its host
+    // page's origin -- it is injected into every site. The message carries no
+    // secret; content.js authenticates it by checking the sending window is
+    // this frame, which a page cannot forge.
+    window.parent.postMessage(
+      { type: "watchparty:set-panel-mode", mode: expanded ? "expanded" : "docked" },
+      "*"
+    );
+  }, [expanded]);
+}
+
+// Fullscreen has to be requested by THIS document on itself, never by the
+// content script on the iframe: user activation is per-document, and a click
+// inside this frame does not activate the parent. Works because content.js puts
+// `fullscreen` in the iframe's allow list.
+function useFullscreen() {
+  const [isFullscreen, setIsFullscreen] = useState(false);
+
+  useEffect(() => {
+    // Listened for rather than assumed: Escape exits fullscreen without ever
+    // going through our button, and a button that then lies about the state is
+    // worse than no button.
+    const onChange = () => setIsFullscreen(Boolean(document.fullscreenElement));
+    document.addEventListener("fullscreenchange", onChange);
+    return () => document.removeEventListener("fullscreenchange", onChange);
+  }, []);
+
+  const toggle = () => {
+    if (document.fullscreenElement) {
+      document.exitFullscreen();
+    } else {
+      document.documentElement.requestFullscreen().catch((err) => {
+        console.warn("fullscreen refused:", err.name, err.message);
+      });
+    }
+  };
+
+  return { isFullscreen, toggle };
+}
+
 export default function Panel() {
   const { name, version } = chrome.runtime.getManifest();
   const cameraPermission = useCameraPermission();
@@ -72,7 +122,25 @@ export default function Panel() {
     toggleMic,
     localVideoRef,
     remoteVideoRef,
+
+    sharing,
+    shareStarting,
+    partnerSharing,
+    shareWarnings,
+    canShare,
+    startShare,
+    stopShare,
+    localScreenVideoRef,
+    remoteScreenVideoRef,
+    localScreenAudioRef,
   } = useWatchPartyCall();
+
+  const { isFullscreen, toggle: toggleFullscreen } = useFullscreen();
+  // Only the viewer expands. `sharing` wins the tie so that a simultaneous
+  // share (which media-state's tie-break resolves a beat later) never leaves
+  // the sharer's own panel covering the tab they are sharing.
+  const expanded = partnerSharing && !sharing;
+  usePanelMode(expanded);
 
   // "prompt" counts as needing action, not just "denied". A prompt this
   // document is structurally unable to display is, in practice, a denial --
@@ -88,7 +156,7 @@ export default function Panel() {
   };
 
   return (
-    <div className="panel">
+    <div className={`panel${expanded ? " panel--expanded" : ""}`}>
       <header className="panel__header">
         <h1 className="panel__title">{name}</h1>
         <span className="panel__version">v{version}</span>
@@ -112,44 +180,64 @@ export default function Panel() {
         </div>
       )}
 
-      <div className="panel__tiles">
+      <ShareStage
+        localScreenVideoRef={localScreenVideoRef}
+        remoteScreenVideoRef={remoteScreenVideoRef}
+        localScreenAudioRef={localScreenAudioRef}
+        sharing={sharing}
+        shareStarting={shareStarting}
+        partnerSharing={partnerSharing}
+        shareWarnings={shareWarnings}
+        canShare={canShare}
+        onStartShare={startShare}
+        onStopShare={stopShare}
+        onToggleFullscreen={toggleFullscreen}
+        isFullscreen={isFullscreen}
+      />
+
+      {/* In expanded mode this becomes a floating rail over the video's
+          corner rather than a column -- same components, same order, different
+          container. See .panel--expanded in panel.css. */}
+      <div className="panel__rail">
+        <div className="panel__tiles">
         {/* Your tile carries the controls: click anywhere on it to toggle the
             camera, and the mic button appears on hover. `muted` so you don't
             hear yourself; `mirrored` is preview-only -- what your partner
             receives is unmirrored. `idle` is what stops it rendering a black
             rectangle while there is no call: the devices deliberately stay
             shut until a partner arrives. */}
-        <CameraBox
-          videoRef={localVideoRef}
-          label="You"
-          muted
-          mirrored
-          cameraOn={cameraOn}
-          micOn={micOn}
-          starting={cameraStarting}
-          idle={!devicesOpen}
-          interactive
-          onToggleCamera={toggleCamera}
-          onToggleMic={toggleMic}
-        />
-        {/* Display-only. Its camera/mic state arrives over the signaling
-            channel as `media-state`; nothing here can change what the partner
-            sends. Shares the same `devicesOpen` idle signal -- if OUR devices
-            aren't open there is no peering session, so there is no partner
-            stream either. */}
-        <CameraBox
-          videoRef={remoteVideoRef}
-          label="Partner"
-          cameraOn={partnerCameraOn}
-          micOn={partnerMicOn}
-          idle={!devicesOpen}
-        />
-      </div>
+          <CameraBox
+            videoRef={localVideoRef}
+            label="You"
+            muted
+            mirrored
+            cameraOn={cameraOn}
+            micOn={micOn}
+            starting={cameraStarting}
+            idle={!devicesOpen}
+            interactive
+            onToggleCamera={toggleCamera}
+            onToggleMic={toggleMic}
+          />
+          {/* Display-only. Its camera/mic state arrives over the signaling
+              channel as `media-state`; nothing here can change what the partner
+              sends. Shares the same `devicesOpen` idle signal -- if OUR devices
+              aren't open there is no peering session, so there is no partner
+              stream either. */}
+          <CameraBox
+            videoRef={remoteVideoRef}
+            label="Partner"
+            cameraOn={partnerCameraOn}
+            micOn={partnerMicOn}
+            idle={!devicesOpen}
+          />
+        </div>
 
-      {/* Placeholder for Session 5E. Reserving the space now means chat lands
-          in the panel's remaining height instead of reshuffling this layout
-          later. */}
-      <div className="panel__chat-placeholder">chat — coming in session 5</div>
+        {/* Placeholder for Session 5E. Reserving the space now means chat lands
+            in the panel's remaining height instead of reshuffling this layout
+            later. */}
+        <div className="panel__chat-placeholder">chat — coming in session 5</div>
+      </div>
     </div>
   );
 }

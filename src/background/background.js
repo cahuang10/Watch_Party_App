@@ -90,3 +90,51 @@ async function sendToggle(tabId) {
     return false;
   }
 }
+
+// --- tab capture brokering (Session 4E) -----------------------------------
+//
+// Why the service worker does this at all, when the panel is the document that
+// actually consumes the stream: `chrome.tabCapture.getMediaStreamId()` has a
+// documented list of contexts it may be called from -- the service worker, a
+// top-level extension page, and a popup. An extension-origin iframe embedded
+// in a web page (our panel) is not on that list.
+//
+// And why the request arrives via the CONTENT SCRIPT rather than straight from
+// the panel: this handler's entire security model is `sender.tab.id`. The docs
+// guarantee that field "when the connection was opened from a tab (including
+// content scripts)" but say nothing definitive about an embedded extension
+// iframe, so relying on it there would be building on an unverified promise.
+// A content script is unambiguous. The panel therefore postMessages its
+// request to the content script, which relays it here.
+//
+// The stream ID is a string, which is exactly why this indirection is possible
+// at all -- IDs cross contexts freely, MediaStreams never do (locked decision
+// #3, and the reason an offscreen document doesn't solve the panel's problem).
+chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  if (message?.type !== "watchparty:request-tab-capture-id") return;
+
+  const tabId = sender.tab?.id;
+  if (!tabId) {
+    // Means the message did NOT come from a content script. Refuse rather than
+    // guessing a tab -- capturing the wrong tab would be worse than failing.
+    sendResponse({ ok: false, error: "no tab id on sender; request must come via the content script" });
+    return; // synchronous response, no need to hold the channel open
+  }
+
+  chrome.tabCapture
+    // targetTabId and consumerTabId are the SAME tab here, and that's the
+    // documented case rather than a trick: consumerTabId exists so that a
+    // frame inside tab X may consume a capture of tab X. Omitting it would
+    // restrict the id to the caller's own render process -- the service
+    // worker's -- which the panel is not in, so it must always be passed.
+    .getMediaStreamId({ targetTabId: tabId, consumerTabId: tabId })
+    .then((streamId) => sendResponse({ ok: true, streamId }))
+    .catch((error) => {
+      console.error("[watch party] getMediaStreamId failed:", error);
+      sendResponse({ ok: false, error: error.message });
+    });
+
+  // Required: without it the channel closes before the promise above settles
+  // and the caller's sendMessage rejects with "message port closed".
+  return true;
+});
