@@ -87,10 +87,32 @@ export async function captureTab() {
   const streamId = await requestTabCaptureStreamId();
 
   const stream = await navigator.mediaDevices.getUserMedia({
+    // Audio processing is explicitly OFF, and this is the single most
+    // important thing in this object.
+    //
+    // Echo cancellation, noise suppression and automatic gain control are
+    // VOICE-CALL processing: correct for a microphone, actively destructive on
+    // a shared movie or song, which they mangle. AGC in particular pumps the
+    // level up and down chasing a "voice" that is really a soundtrack.
+    //
+    // This existed in the getDisplayMedia version as three standard
+    // constraints, was dropped in the 4E rewrite, and the result was audio the
+    // partner described as "a chainsaw running". Restored here in the legacy
+    // `goog` spelling because tab capture uses the legacy `mandatory` dict --
+    // the standard names are not honoured inside it, and mixing the two styles
+    // in one constraint object earns an OverconstrainedError.
+    //
+    // The mic's constraints in useWatchPartyCall.js turn these same three ON,
+    // for the opposite and equally deliberate reason. If you are ever tempted
+    // to unify them, don't: they are different sources with opposite needs.
     audio: {
       mandatory: {
         chromeMediaSource: "tab",
         chromeMediaSourceId: streamId,
+        googEchoCancellation: false,
+        googAutoGainControl: false,
+        googNoiseSuppression: false,
+        googHighpassFilter: false,
       },
     },
     video: {

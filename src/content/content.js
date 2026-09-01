@@ -91,7 +91,25 @@
     // chrome entirely. requestFullscreen() must be called by the PANEL on its
     // own document, not by this script on the iframe -- user activation is
     // per-document, and a click inside the iframe does not activate this one.
-    iframe.allow = "camera; microphone; fullscreen";
+    //
+    // `autoplay` added in 5E, and it is not optional: like camera and
+    // microphone, the autoplay Permissions-Policy feature defaults to an
+    // allowlist of `self`, so a CROSS-ORIGIN iframe is denied audible autoplay
+    // unless the parent delegates it here. This panel is always cross-origin --
+    // chrome-extension://<id> inside https://<site> -- by design (locked
+    // decision #3), so without this the partner's voice never plays.
+    //
+    // The symptom is deceptive and worth recognising again: MUTED autoplay is
+    // always permitted, so all video and the muted self-preview work perfectly
+    // and only the partner's audio is silent. It reads as "audio is broken",
+    // not as "autoplay is blocked". It also appears to work on whichever
+    // machine you happened to click in first, because a user gesture inside the
+    // frame grants activation and lifts the block for that document only.
+    //
+    // Third distinct Permissions-Policy feature this project has been bitten by
+    // (camera, microphone, now autoplay). When something in the panel silently
+    // does nothing, check the delegated feature list before anything else.
+    iframe.allow = "camera; microphone; fullscreen; autoplay";
 
     // Inline styles, not a stylesheet: the page can't out-specify what's in the
     // style attribute without !important, and this needs no build-time CSS.

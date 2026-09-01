@@ -37,6 +37,22 @@ function CameraBox({
         autoPlay
         playsInline
         muted={muted}
+        /* The `autoPlay` attribute fails SILENTLY when a policy blocks it --
+           no error, no event, just a tile that renders video and plays no
+           sound. That cost a session (5E: the panel iframe was never delegated
+           `autoplay`, see content.js). Calling play() explicitly gives the
+           failure somewhere to surface. loadedmetadata rather than an effect
+           because srcObject is assigned imperatively by useWatchPartyCall, so
+           React never re-renders on the change that matters here. */
+        onLoadedMetadata={() => {
+          videoRef.current?.play().catch((err) => {
+            console.warn(
+              `[watch party] "${label}" tile could not start playback:`,
+              err.name,
+              err.message
+            );
+          });
+        }}
         className={`camera-box__video${mirrored ? " camera-box__video--mirrored" : ""}`}
       />
 

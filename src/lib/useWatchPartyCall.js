@@ -9,6 +9,34 @@ import { captureTab, applyScreenQuality, preferVideoCodecs } from "./screenShare
 // ask for one explicitly rather than waiting forever.
 const OFFER_TIMEOUT_MS = 3000;
 
+// --- the muted-tab fix, currently UNDER TEST (Session 5E) -------------------
+//
+// 4E played the captured tab audio back through a hidden <audio> in the panel,
+// on the premise that "capturing a tab's audio mutes it for the sharer". That
+// premise is inherited from the OLD chrome.tabCapture.capture() API and was
+// never verified against the getMediaStreamId() pipeline this app actually
+// uses -- the 4E commit says so in as many words.
+//
+// It is also structurally dangerous, which is why it is off right now. The
+// panel iframe LIVES INSIDE THE TAB BEING CAPTURED. Tab capture takes the
+// tab's whole audio output, this panel included, so playing the capture here
+// feeds it straight back into itself: the sharer's own playback is re-captured
+// and re-sent, over and over. A self-reinforcing loop is an excellent match for
+// the "sounds like a chainsaw" report, and no amount of filtering or ducking
+// can fix it -- the loop is architectural, not tonal.
+//
+// THE TEST: with this false, share a tab playing music and ask whether the
+// SHARER still hears it.
+//   * Sharer still hears it -> the premise is stale. Delete this constant and
+//     the whole localScreenAudioRef path; the muted-tab problem never existed
+//     under this API, and CLAUDE.md / SPEC.md / workflow.md need correcting.
+//   * Sharer hears silence -> the premise holds, and playback has to happen
+//     somewhere outside the captured tab. That is a genuine design problem
+//     (an offscreen document cannot receive a MediaStream across documents,
+//     and only one tabCapture per tab is allowed, so it cannot capture its own
+//     copy) -- stop and decide, don't improvise.
+const PLAY_CAPTURED_AUDIO_LOCALLY = false;
+
 // The whole call lives here: signaling, the peer connection, and the camera/mic
 // and screen-share controls. It's a hook rather than code inside App because the
 // toggle buttons need to reach the peer connection's senders and the local
@@ -34,13 +62,12 @@ export function useWatchPartyCall() {
   // its srcObject.
   const localScreenVideoRef = useRef(null);
   const remoteScreenVideoRef = useRef(null);
-  // The muted-tab fix (Session 4E). Capturing a tab's audio makes Chrome stop
-  // routing that tab to the speakers, so without playing the captured audio
-  // back the SHARER watches their own tab in silence and it reads as a broken
-  // capture. Its own <audio> element rather than the local video preview,
-  // because the preview is viewer-facing and may not be rendered at all on the
-  // sharer's side -- hearing your own tab must not depend on a visual element
-  // existing.
+  // The muted-tab fix (4E), currently disabled pending the feedback-loop test
+  // -- see PLAY_CAPTURED_AUDIO_LOCALLY at the top of this file for the whole
+  // story. Kept as its own <audio> element rather than folded into the local
+  // video preview, because that preview is muted by design and may not be
+  // rendered at all on the sharer's side: hearing your own tab must never
+  // depend on a visual element existing.
   const localScreenAudioRef = useRef(null);
 
   const [status, setStatus] = useState("waiting for partner...");
@@ -374,8 +401,12 @@ export function useWatchPartyCall() {
 
     localScreenStreamRef.current = stream;
     if (localScreenVideoRef.current) localScreenVideoRef.current.srcObject = stream;
-    // Give the sharer their tab's sound back. See localScreenAudioRef above.
-    if (localScreenAudioRef.current) localScreenAudioRef.current.srcObject = stream;
+    // Give the sharer their tab's sound back -- OFF while the feedback-loop
+    // question is open, since this panel is inside the tab being captured.
+    // See PLAY_CAPTURED_AUDIO_LOCALLY at the top of this file.
+    if (PLAY_CAPTURED_AUDIO_LOCALLY && localScreenAudioRef.current) {
+      localScreenAudioRef.current.srcObject = stream;
+    }
     await waitForFirstFrame(localScreenVideoRef.current);
     if (op === shareOpRef.current) setShareStarting(false);
 
