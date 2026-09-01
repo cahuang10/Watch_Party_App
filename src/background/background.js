@@ -122,12 +122,24 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
 
   chrome.tabCapture
-    // targetTabId and consumerTabId are the SAME tab here, and that's the
-    // documented case rather than a trick: consumerTabId exists so that a
-    // frame inside tab X may consume a capture of tab X. Omitting it would
-    // restrict the id to the caller's own render process -- the service
-    // worker's -- which the panel is not in, so it must always be passed.
-    .getMediaStreamId({ targetTabId: tabId, consumerTabId: tabId })
+    // consumerTabId is deliberately NOT passed, and this cost a session to
+    // learn. Its documented effect is: "The stream can only be used by frames
+    // in the given tab whose security origin MATCHES THE CONSUMER TAB'S
+    // ORIGIN." Our consumer is the panel iframe, whose origin is
+    // chrome-extension://<id> -- never the host page's origin, by design
+    // (locked decision #3, and the whole reason one camera grant covers every
+    // site). So passing consumerTabId restricts the stream to youtube.com
+    // frames and then refuses the extension frame that actually asked for it.
+    //
+    // The failure is `AbortError: Error starting tab capture` thrown by
+    // getUserMedia in the panel -- NOT by getMediaStreamId, which happily
+    // returns a valid-looking id either way. That split is what makes it
+    // confusing: testing getMediaStreamId alone in a console always "works",
+    // because the origin check happens at CONSUME time, not at mint time.
+    //
+    // Omitting it means "usable only by the calling extension", and the panel
+    // is an extension-origin document, so it qualifies.
+    .getMediaStreamId({ targetTabId: tabId })
     .then((streamId) => sendResponse({ ok: true, streamId }))
     .catch((error) => {
       console.error("[watch party] getMediaStreamId failed:", error);
