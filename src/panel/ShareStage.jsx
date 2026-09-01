@@ -57,13 +57,20 @@ function ShareStage({
         <div className="stage__placeholder">
           {canShare ? (
             <>
-              <button type="button" className="stage__share-button" onClick={onStartShare}>
-                Share this tab
+              <button
+                type="button"
+                className="stage__share-button"
+                onClick={onStartShare}
+                disabled={shareStarting}
+              >
+                {shareStarting ? "starting…" : "Share this tab"}
               </button>
               {/* Worth saying plainly, because it is the payoff of the whole
                   extension rewrite and it looks like something is missing. */}
               <p className="stage__hint">
-                No picker — this shares the tab the panel is docked in.
+                {shareStarting
+                  ? "Requesting tab capture — no picker, so this is the only sign anything is happening."
+                  : "No picker — this shares the tab the panel is docked in."}
               </p>
             </>
           ) : (

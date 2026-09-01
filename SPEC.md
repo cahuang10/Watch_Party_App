@@ -185,6 +185,7 @@ Then: pause nudge, reactions, session logging, summaries — as originally plann
 - **Three consoles, not one.** Service worker errors appear on the `chrome://extensions` card. Content script errors appear in the page's DevTools. Panel iframe errors need the iframe context selected in the DevTools dropdown. Looking in the wrong one wastes hours.
 - **Reload is two steps.** Refresh the extension card, *then* reload the page. Manifest changes always need the card refresh.
 - **`position: fixed` breaks the squeeze** without a transform on the right element — `<body>`, not `<html>`. Putting it on `<html>` squeezes the page but also captures the panel itself, since the panel is a fixed child of `<html>` too. See section 1.
+- **A host page's `Permissions-Policy` header can veto the panel's camera and mic**, and the iframe's `allow=` attribute cannot override it — delegation narrows, never widens. claude.ai sends `camera=(),microphone=()`; YouTube doesn't list them, so they default to `self` and delegate fine. Distinct from the 3E prompt problem and not fixable by `permission.html`. See CLAUDE.md for the diagnosis one-liner.
 - **Tab capture mutes the tab** for the sharer unless audio is played back locally.
 - **MediaStreams can't cross documents.** Stream *ids* can. This constrains where the connection lives.
 - **Hard navigation kills the panel iframe** and drops the call. Expected in MVP.

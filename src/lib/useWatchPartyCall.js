@@ -112,6 +112,17 @@ export function useWatchPartyCall() {
   // two captures live -- the abandoned one still shows Chrome's "sharing"
   // indicator for a capture nobody is using.
   const shareOpRef = useRef(0);
+  // True from the moment Share is clicked until captureTab() has settled.
+  // shareOpRef alone isn't enough to stop a second click during that window --
+  // it identifies which attempt is newest, but doesn't block a second one from
+  // starting. And it has to be a REF, not shareStarting state: React batches
+  // state updates, so a second click arriving before the first render flushes
+  // would still read the old (false) value. Measured on real hardware: two
+  // concurrent captureTab() calls for the same tab collide, and Chrome -- which
+  // allows only one active tabCapture stream per tab -- fails one or both with
+  // AbortError: Error starting tab capture. There is no picker to make the
+  // first click's progress visible, which is exactly what invites the second.
+  const shareStartingRef = useRef(false);
   // Bumped every time a peering session is torn down, so async work started by
   // the old session can notice it has been outlived. See onPeerOnline.
   const peeringTokenRef = useRef(0);
@@ -304,7 +315,12 @@ export function useWatchPartyCall() {
       console.warn("no partner yet, ignoring share request");
       return;
     }
-    if (sharingRef.current) return; // already sharing, nothing to do
+    // Covers two different states that both mean "ignore this click": already
+    // sharing, or still in the middle of STARTING to share. The second one is
+    // the one that actually mattered here -- see shareStartingRef above.
+    if (sharingRef.current || shareStartingRef.current) return;
+    shareStartingRef.current = true;
+    setShareStarting(true);
 
     const op = ++shareOpRef.current;
     setShareWarnings([]);
@@ -317,22 +333,27 @@ export function useWatchPartyCall() {
       // era this is always a real failure rather than a user shrug -- a dead
       // stream id, a refused capture, or the relay timing out.
       console.warn("tab capture failed:", err.name, err.message);
+      shareStartingRef.current = false;
+      if (op === shareOpRef.current) setShareStarting(false);
       return;
     }
     const { stream, warnings } = capture;
 
     if (op !== shareOpRef.current) {
-      // A second click landed before the picker closed on this one. Release
-      // this capture immediately -- an abandoned tab-capture is exactly the
-      // camera-light bug from Session 3, just with Chrome's sharing indicator
-      // standing in for the camera light.
+      // Superseded -- most likely the peering session was torn down and
+      // rebuilt mid-capture (endPeeringSession bumps shareOpRef), since the
+      // guard above already rules out a second click landing on top of this
+      // one. Release this capture immediately -- an abandoned tab-capture is
+      // exactly the camera-light bug from Session 3, just with Chrome's
+      // sharing indicator standing in for the camera light.
       stream.getTracks().forEach((track) => track.stop());
+      shareStartingRef.current = false;
       return;
     }
 
     sharingRef.current = true;
+    shareStartingRef.current = false;
     setSharing(true);
-    setShareStarting(true);
     setShareWarnings(warnings);
 
     const videoTrack = stream.getVideoTracks()[0];
